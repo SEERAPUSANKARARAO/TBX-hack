@@ -41,18 +41,18 @@ ANOMALY_SIGMA_THRESHOLD = float(os.getenv("ANOMALY_SIGMA_THRESHOLD", "2.5"))
 FUZZY_MATCH_THRESHOLD = int(os.getenv("FUZZY_MATCH_THRESHOLD", "90"))
 
 # ── Schema Metadata (for prompt injection) ──
+# Base tables match the TBX client schema exactly. `transaction_derived`
+# is populated locally by db/init_db.py (see core/description_parser.py)
+# and is not part of the client's raw export.
 TABLE_NAMES = [
-    "transactions",
-    "vendor_payouts",
-    "reconciliation_status",
-    "chart_of_accounts",
-    "vendor_list",
+    "bank",
+    "account",
+    "transaction",
+    "transaction_derived",
 ]
 
 CSV_TO_TABLE_MAP = {
-    "chart_of_accounts.csv": "chart_of_accounts",
-    "vendor_list.csv": "vendor_list",
-    "transactions.csv": "transactions",
-    "vendor_payouts.csv": "vendor_payouts",
-    "reconciliation_status.csv": "reconciliation_status",
+    "bank.csv": "bank",
+    "account.csv": "account",
+    "transaction.csv": "transaction",
 }

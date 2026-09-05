@@ -1,201 +1,147 @@
 -- ============================================================
 -- Financial AI Chatbot – DuckDB Schema Definition
 -- ============================================================
--- This DDL creates all tables, indexes, and optimized views
--- for the deterministic Text-to-SQL financial chatbot.
+-- Base tables (bank / account / transaction) match the TBX client's
+-- DDL exactly — do not add or rename columns here. Everything derived
+-- (counterparty extraction, masking, reconciliation proxy) lives in
+-- `transaction_derived` and the views below, so the raw client tables
+-- stay pristine and swappable with a real export.
 -- ============================================================
 
--- ── Table: chart_of_accounts ──
--- Master list of GL accounts used to categorize transactions.
-CREATE TABLE IF NOT EXISTS chart_of_accounts (
-    account_id      INTEGER PRIMARY KEY,
-    account_code    VARCHAR NOT NULL UNIQUE,
-    account_name    VARCHAR NOT NULL,
-    account_type    VARCHAR NOT NULL,          -- Asset, Liability, Equity, Revenue, Expense
-    parent_account_code VARCHAR,
-    description     VARCHAR,
-    is_active       BOOLEAN DEFAULT true
+CREATE TABLE IF NOT EXISTS bank (
+    bank_code    VARCHAR(10)  PRIMARY KEY,
+    bank_name    VARCHAR(150) NOT NULL
 );
 
--- ── Table: vendor_list ──
--- Master vendor directory with aliases for fuzzy matching.
-CREATE TABLE IF NOT EXISTS vendor_list (
-    vendor_id       INTEGER PRIMARY KEY,
-    vendor_name     VARCHAR NOT NULL,
-    vendor_alias    VARCHAR,                   -- Short name / common alias
-    category        VARCHAR,
-    contact_email   VARCHAR,
-    phone           VARCHAR,
-    address         VARCHAR,
-    payment_terms   VARCHAR,                   -- Net 15, Net 30, Net 45, Net 60
-    is_active       BOOLEAN DEFAULT true
+CREATE TABLE IF NOT EXISTS account (
+    account_id         VARCHAR(36)   PRIMARY KEY,
+    entity_id          VARCHAR(36)   NOT NULL,
+    account_number     VARCHAR(20)   NOT NULL,   -- SENSITIVE: never SELECT raw, use v_account_enriched.masked_account_number
+    program_id         INTEGER       NOT NULL,
+    available_balance  DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+    bank_code          VARCHAR(10)   NOT NULL REFERENCES bank(bank_code)
 );
 
--- ── Table: transactions ──
--- Core financial transaction ledger.
-CREATE TABLE IF NOT EXISTS transactions (
-    transaction_id    INTEGER PRIMARY KEY,
-    transaction_date  DATE NOT NULL,
-    posted_date       DATE,
-    vendor_id         INTEGER REFERENCES vendor_list(vendor_id),
-    vendor_name       VARCHAR NOT NULL,
-    amount            DECIMAL(15, 2) NOT NULL,
-    currency          VARCHAR DEFAULT 'USD',
-    transaction_type  VARCHAR NOT NULL,        -- debit, credit
-    account_code      VARCHAR REFERENCES chart_of_accounts(account_code),
-    category          VARCHAR,
-    description       VARCHAR,
-    reference_number  VARCHAR,
-    payment_method    VARCHAR                  -- ACH, Wire, Credit Card, Check
+CREATE TABLE IF NOT EXISTS transaction (
+    transaction_id           VARCHAR(36)   PRIMARY KEY,
+    account_id               VARCHAR(36)   NOT NULL REFERENCES account(account_id),
+    transaction_date         TIMESTAMP     NOT NULL,
+    transaction_type         VARCHAR(10)   NOT NULL CHECK (transaction_type IN ('credit', 'debit')),
+    description              VARCHAR(500),
+    transaction_amount       DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+    transaction_reference_id VARCHAR(64),          -- plaintext, directly searchable
+    utr_number               VARCHAR(256)          -- SENSITIVE: never SELECT raw, use v_transaction_enriched.masked_utr_token
 );
-
--- ── Table: vendor_payouts ──
--- Records of payments issued to vendors.
-CREATE TABLE IF NOT EXISTS vendor_payouts (
-    payout_id         INTEGER PRIMARY KEY,
-    vendor_id         INTEGER REFERENCES vendor_list(vendor_id),
-    vendor_name       VARCHAR NOT NULL,
-    payout_date       DATE NOT NULL,
-    amount            DECIMAL(15, 2) NOT NULL,
-    currency          VARCHAR DEFAULT 'USD',
-    payment_method    VARCHAR,
-    bank_reference    VARCHAR,
-    invoice_number    VARCHAR,
-    status            VARCHAR NOT NULL,        -- completed, pending, failed
-    notes             VARCHAR
-);
-
--- ── Table: reconciliation_status ──
--- Links transactions to payouts with reconciliation state.
-CREATE TABLE IF NOT EXISTS reconciliation_status (
-    reconciliation_id   INTEGER PRIMARY KEY,
-    transaction_id      INTEGER REFERENCES transactions(transaction_id),
-    payout_id           INTEGER REFERENCES vendor_payouts(payout_id),
-    reconciliation_date DATE,
-    status              VARCHAR NOT NULL,      -- reconciled, unreconciled, pending
-    matched_amount      DECIMAL(15, 2),
-    variance            DECIMAL(15, 2) DEFAULT 0.00,
-    variance_reason     VARCHAR,
-    reconciled_by       VARCHAR,               -- system, manual_review
-    notes               VARCHAR
-);
-
 
 -- ============================================================
--- OPTIMIZED VIEWS
+-- DERIVED TABLE — populated once by db/init_db.py via
+-- core/description_parser.py (deterministic regex, not an LLM call).
+-- Kept separate from `transaction` so the client's raw schema is
+-- never touched.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS transaction_derived (
+    transaction_id         VARCHAR(36) PRIMARY KEY REFERENCES transaction(transaction_id),
+    rail_type              VARCHAR(20),          -- UPI, NEFT, IMPS, FT, RTGS, OTHER
+    counterparty_name      VARCHAR(200),         -- best-effort extraction from description; NULL if not confidently found
+    counterparty_confidence VARCHAR(10)          -- 'high', 'medium', 'low'
+);
+
+-- ============================================================
+-- VIEWS
 -- ============================================================
 
--- ── View: v_transactions_enriched ──
--- Transactions joined with account and vendor details.
-CREATE OR REPLACE VIEW v_transactions_enriched AS
+-- Accounts joined with bank details. account_number is masked here —
+-- this is the ONLY account-level view SQL generation should read from.
+CREATE OR REPLACE VIEW v_account_enriched AS
+SELECT
+    a.account_id,
+    a.entity_id,
+    '******' || RIGHT(a.account_number, 4) AS masked_account_number,
+    a.program_id,
+    a.available_balance,
+    a.bank_code,
+    b.bank_name
+FROM account a
+LEFT JOIN bank b ON a.bank_code = b.bank_code;
+
+-- Transactions joined with account/bank/derived-entity context.
+-- Raw account_number and utr_number are deliberately NOT included —
+-- masked_account_number / masked_utr_token stand in for them.
+CREATE OR REPLACE VIEW v_transaction_enriched AS
 SELECT
     t.transaction_id,
+    t.account_id,
     t.transaction_date,
-    t.posted_date,
-    t.vendor_id,
-    t.vendor_name,
-    v.vendor_alias,
-    v.category AS vendor_category,
-    t.amount,
-    t.currency,
     t.transaction_type,
-    t.account_code,
-    a.account_name,
-    a.account_type,
-    t.category AS expense_category,
     t.description,
-    t.reference_number,
-    t.payment_method,
-    -- Date parts for easy filtering
+    t.transaction_amount,
+    t.transaction_reference_id,
+    CASE WHEN t.utr_number IS NOT NULL AND t.utr_number != ''
+         THEN 'UTR-' || SUBSTR(MD5(t.utr_number), 1, 6)
+         ELSE NULL END AS masked_utr_token,
+    (t.transaction_reference_id IS NOT NULL AND t.transaction_reference_id != '') AS has_reference,
+    (t.utr_number IS NOT NULL AND t.utr_number != '') AS has_utr,
+    CASE WHEN (t.transaction_reference_id IS NOT NULL AND t.transaction_reference_id != '')
+           OR (t.utr_number IS NOT NULL AND t.utr_number != '')
+         THEN 'reconciled' ELSE 'unreconciled' END AS reconciliation_proxy_status,
+    d.rail_type,
+    d.counterparty_name,
+    d.counterparty_confidence,
+    a.entity_id,
+    '******' || RIGHT(a.account_number, 4) AS masked_account_number,
+    a.program_id,
+    a.bank_code,
+    b.bank_name,
     YEAR(t.transaction_date)    AS txn_year,
     MONTH(t.transaction_date)   AS txn_month,
     QUARTER(t.transaction_date) AS txn_quarter,
     DAYNAME(t.transaction_date) AS txn_day_of_week
-FROM transactions t
-LEFT JOIN vendor_list v ON t.vendor_id = v.vendor_id
-LEFT JOIN chart_of_accounts a ON t.account_code = a.account_code;
+FROM transaction t
+LEFT JOIN transaction_derived d ON t.transaction_id = d.transaction_id
+LEFT JOIN account a ON t.account_id = a.account_id
+LEFT JOIN bank b ON a.bank_code = b.bank_code;
 
--- ── View: v_reconciliation_details ──
--- Full reconciliation view joining transactions and payouts.
-CREATE OR REPLACE VIEW v_reconciliation_details AS
+-- Per-counterparty monthly spend summary (debits only — spend direction).
+-- SQL generation should prefer this for "how much did we spend on X"
+-- style questions instead of re-aggregating the enriched view, since a
+-- pre-aggregated view is far less prone to fan-out/double-counting.
+CREATE OR REPLACE VIEW v_counterparty_spend_summary AS
 SELECT
-    r.reconciliation_id,
-    r.status AS reconciliation_status,
-    r.reconciliation_date,
-    r.matched_amount,
-    r.variance,
-    r.variance_reason,
-    r.reconciled_by,
-    t.transaction_id,
-    t.transaction_date,
-    t.vendor_name,
-    t.amount AS transaction_amount,
-    t.category AS expense_category,
-    t.reference_number AS transaction_ref,
-    p.payout_id,
-    p.payout_date,
-    p.amount AS payout_amount,
-    p.status AS payout_status,
-    p.bank_reference,
-    p.invoice_number
-FROM reconciliation_status r
-LEFT JOIN transactions t ON r.transaction_id = t.transaction_id
-LEFT JOIN vendor_payouts p ON r.payout_id = p.payout_id;
+    counterparty_name,
+    rail_type,
+    txn_year,
+    txn_month,
+    COUNT(*)               AS transaction_count,
+    SUM(transaction_amount) AS total_spend,
+    AVG(transaction_amount) AS avg_transaction,
+    MIN(transaction_amount) AS min_transaction,
+    MAX(transaction_amount) AS max_transaction
+FROM v_transaction_enriched
+WHERE transaction_type = 'debit'
+  AND counterparty_name IS NOT NULL
+  AND counterparty_confidence != 'low'
+GROUP BY counterparty_name, rail_type, txn_year, txn_month;
 
--- ── View: v_vendor_spend_summary ──
--- Monthly spend summary per vendor.
-CREATE OR REPLACE VIEW v_vendor_spend_summary AS
+-- Lookup of distinct extracted counterparty names — feeds the entity
+-- resolver's fuzzy-match index (replaces a vendor_list table, which
+-- doesn't exist in the real client schema).
+CREATE OR REPLACE VIEW v_counterparty_lookup AS
 SELECT
-    t.vendor_id,
-    t.vendor_name,
-    YEAR(t.transaction_date)  AS spend_year,
-    MONTH(t.transaction_date) AS spend_month,
-    COUNT(*)                  AS transaction_count,
-    SUM(t.amount)             AS total_spend,
-    AVG(t.amount)             AS avg_transaction,
-    MIN(t.amount)             AS min_transaction,
-    MAX(t.amount)             AS max_transaction
-FROM transactions t
-GROUP BY t.vendor_id, t.vendor_name,
-         YEAR(t.transaction_date), MONTH(t.transaction_date);
+    counterparty_name,
+    rail_type,
+    COUNT(*) AS mention_count
+FROM transaction_derived
+WHERE counterparty_name IS NOT NULL
+  AND counterparty_confidence != 'low'
+GROUP BY counterparty_name, rail_type;
 
--- ── View: v_reconciliation_summary ──
--- Reconciliation status aggregates.
+-- Reconciliation-proxy breakdown (see column comment above — this is a
+-- heuristic based on presence of a reference/UTR, not a definitive
+-- accounting reconciliation status).
 CREATE OR REPLACE VIEW v_reconciliation_summary AS
 SELECT
-    status,
-    COUNT(*)           AS record_count,
-    SUM(variance)      AS total_variance,
-    AVG(variance)      AS avg_variance
-FROM reconciliation_status
-GROUP BY status;
-
-
--- ============================================================
--- LOOKUP VIEWS (for entity resolution)
--- ============================================================
-
--- ── Lookup: All unique vendor names and aliases ──
-CREATE OR REPLACE VIEW v_vendor_lookup AS
-SELECT DISTINCT
-    vendor_id,
-    vendor_name,
-    vendor_alias,
-    category
-FROM vendor_list
-WHERE is_active = true;
-
--- ── Lookup: All reconciliation statuses ──
-CREATE OR REPLACE VIEW v_reconciliation_statuses AS
-SELECT DISTINCT status FROM reconciliation_status;
-
--- ── Lookup: All expense/payout categories ──
-CREATE OR REPLACE VIEW v_expense_categories AS
-SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL;
-
--- ── Lookup: All account types ──
-CREATE OR REPLACE VIEW v_account_types AS
-SELECT DISTINCT account_type, account_code, account_name
-FROM chart_of_accounts
-WHERE is_active = true
-ORDER BY account_code;
+    reconciliation_proxy_status,
+    COUNT(*)                    AS record_count,
+    SUM(transaction_amount)     AS total_amount
+FROM v_transaction_enriched
+GROUP BY reconciliation_proxy_status;
