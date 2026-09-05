@@ -115,7 +115,7 @@
         <!-- Quick Prompt Chips — directly above the input bar, where you're about to type -->
         <div class="prompt-chips-container">
           <span class="chips-title">Suggested Inquiries:</span>
-          <div class="chips-scroll">
+          <div class="chips-scroll" id="chips-scroll">
             <button class="prompt-chip" data-query="How much did we send to Amazon Retail India this quarter?">Amazon Spend Q</button>
             <button class="prompt-chip" data-query="Who are our top 5 counterparties by total spend?">Top 5 Counterparties</button>
             <button class="prompt-chip" data-query="Show unreconciled transactions over 50000.">Unreconciled &gt; 50k</button>
@@ -244,6 +244,7 @@
               <div class="sql-code-block">
                 <pre><code id="executed-sql-code">-- Executed SQL query will appear here</code></pre>
               </div>
+              <div id="lineage-summary" class="lineage-narrative hidden"></div>
               <div class="lineage-metadata-grid">
                 <div class="meta-item">
                   <span class="meta-label">Touched Tables</span>

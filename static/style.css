@@ -1104,6 +1104,18 @@ body {
   line-height: 1.4;
 }
 
+.lineage-narrative {
+  background: rgba(16, 185, 129, 0.06);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
 .lineage-metadata-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));

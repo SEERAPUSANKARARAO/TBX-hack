@@ -102,6 +102,46 @@ NON_VENDOR_WORDS = {
 }
 
 
+# Anaphoric/referential follow-up phrasing ("compare that", "what about
+# them") — meaningful only when there's a prior turn to resolve the
+# reference against. Narrow and precise by design: a false positive here
+# blocks a legitimate first-turn question, so this only matches phrasing
+# that's genuinely referential, not generic vague questions (those stay
+# governed by core/prompts.py rule 11 — "prefer broader results over
+# empty sets" — which is a deliberately different policy for a different
+# case: answerable-but-broad, not referring to something that doesn't exist).
+REFERENTIAL_FOLLOWUP_PATTERNS = [
+    r'\bcompare\s+(that|this|it|them)\b',
+    r'\bthe\s+same\s+(thing|period|counterparty|vendor|bank)\b',
+    r'\b(about|for)\s+them\b',
+    r'\bwhat\s+about\s+it\b',
+    r'\bprevious\s+(one|period|answer|result)\b',
+    r'\blast\s+time\b',
+    r'^\s*and\s+(this|that|last|previous)\b',
+]
+
+
+def detect_referential_ambiguity(query: str) -> str | None:
+    """
+    Detect a follow-up-style referential phrase ("compare that to last
+    quarter", "what about them") that has nothing to resolve against — only
+    meaningful to call when there's no conversation history for the current
+    session (see core/sql_generator.py's SQLGenerator.generate()).
+
+    Returns a clarification message when matched, else None.
+    """
+    lowered = query.lower()
+    for pattern in REFERENTIAL_FOLLOWUP_PATTERNS:
+        if re.search(pattern, lowered):
+            return (
+                "Your question seems to refer back to a previous answer (e.g. \"that\", \"them\", "
+                "\"the same period\"), but this is the start of our conversation, so there's nothing "
+                "for me to compare against yet. Could you specify what you'd like to look at — a "
+                "counterparty, bank, or date range?"
+            )
+    return None
+
+
 @dataclass
 class ResolvedEntities:
     """Result of entity resolution on a user query."""

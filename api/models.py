@@ -100,6 +100,7 @@ class QueryResponse(BaseModel):
     error: str | None = None
     direct_response_kind: str | None = None  # "greeting" | "blocked" — set when no SQL was generated at all
     suggestions: list[str] = []
+    lineage_summary: str | None = None  # plain-English "what data this answer came from" (see api/main.py)
 
 
 class HealthResponse(BaseModel):

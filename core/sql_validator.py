@@ -121,7 +121,18 @@ def validate_sql(sql: str) -> ValidationResult:
     if not parsed:
         return ValidationResult(is_valid=False, sql=sql, error="Failed to parse SQL — no statements found.")
 
-    # ── Step 2: Block destructive operations, require SELECT ──
+    # ── Step 2: Reject multi-statement SQL ──
+    # Only the first statement would ever run (the read-only connection in
+    # core/db_connection.py doesn't set CLIENT.MULTI_STATEMENTS), so silently
+    # validating a whole batch would be misleading. Reject explicitly instead.
+    statement_count = sum(1 for statement in parsed if statement is not None)
+    if statement_count > 1:
+        return ValidationResult(
+            is_valid=False, sql=sql,
+            error="BLOCKED: multiple SQL statements are not allowed. Submit exactly one SELECT statement.",
+        )
+
+    # ── Step 3: Block destructive operations, require SELECT ──
     for statement in parsed:
         if statement is None:
             continue
@@ -141,7 +152,7 @@ def validate_sql(sql: str) -> ValidationResult:
                     error=f"Only SELECT queries are allowed. Got: {type(statement).__name__}"
                 )
 
-    # ── Step 3: Verify referenced tables ──
+    # ── Step 4: Verify referenced tables ──
     for statement in parsed:
         if statement is None:
             continue
@@ -158,7 +169,7 @@ def validate_sql(sql: str) -> ValidationResult:
     if table_errors:
         return ValidationResult(is_valid=False, sql=sql, error=table_errors[0], warnings=warnings)
 
-    # ── Step 4: Block raw PII columns ──
+    # ── Step 5: Block raw PII columns ──
     # Narrow and deliberate rather than a full column linter: false positives
     # here would break legitimate queries, but a PII leak is unacceptable, so
     # this specific check is a hard block regardless of alias/qualifier.
@@ -207,6 +218,36 @@ def validate_sql(sql: str) -> ValidationResult:
                     )
 
     return ValidationResult(is_valid=True, sql=sql, warnings=warnings if warnings else None)
+
+
+def validate_entity_scope(sql: str, entity_id: str | None) -> ValidationResult:
+    """
+    When a customer entity_id is selected in the UI (see api/models.py's
+    QueryRequest.entity_id), require every generated query to filter by it.
+    This is a usability scope, not a security boundary — the read-only DB
+    user can still read every entity's rows (see core/db_connection.py) —
+    but it stops the LLM from silently returning another customer's data
+    when one was explicitly selected.
+
+    A plain substring check, not a parsed-SQL check: deliberately simple so
+    it stays predictable for auto-repair prompting. `entity_id=None` means
+    no customer is selected, so there's nothing to scope — always valid.
+    """
+    if not entity_id:
+        return ValidationResult(is_valid=True, sql=sql)
+
+    if entity_id not in sql:
+        return ValidationResult(
+            is_valid=False, sql=sql,
+            error=(
+                f"BLOCKED: a customer is selected (entity_id='{entity_id}') but the query doesn't "
+                f"filter by it. Every account/transaction reference must be scoped to this entity_id "
+                f"— join to account and add `account.entity_id = '{entity_id}'` (or filter directly "
+                f"on the enriched views' entity_id column)."
+            ),
+        )
+
+    return ValidationResult(is_valid=True, sql=sql)
 
 
 def enforce_row_limit(sql: str, max_rows: int = 1000) -> str:

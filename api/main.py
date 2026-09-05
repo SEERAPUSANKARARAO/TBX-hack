@@ -52,11 +52,56 @@ from core.query_engine import QueryEngine
 from core.response_synthesizer import synthesize_response
 from core.anomaly_detector import AnomalyDetector
 from core.confidence_scorer import compute_confidence
-from core.data_bounds import get_reference_date
+from core.data_bounds import get_reference_date, get_known_entity_ids
+from core.sql_validator import VALID_TABLES
+from core.db_connection import get_connection
 
 logger = logging.getLogger(__name__)
 
 _sessions: dict[str, SQLGenerator] = {}
+
+# Plain-English labels for the SQL Lineage & Audit Trace card's business-
+# readable summary (see _build_lineage_summary) — the raw technical grid
+# (tables_touched, columns, etc.) stays untouched alongside this.
+FRIENDLY_TABLE_NAMES = {
+    "bank": "Bank Master",
+    "account": "Account Master",
+    "transaction": "Transaction Ledger",
+    "transaction_derived": "Extracted Counterparty Data",
+    "v_account_enriched": "Account Records (bank-enriched, masked)",
+    "v_transaction_enriched": "Transaction Records (bank, account & counterparty enriched, masked)",
+    "v_counterparty_spend_summary": "Pre-aggregated Counterparty Spend Summary",
+    "v_counterparty_lookup": "Counterparty Directory",
+    "v_reconciliation_summary": "Reconciliation Status Summary",
+    "v_entity_lookup": "Customer Entity Directory",
+}
+assert set(FRIENDLY_TABLE_NAMES) == VALID_TABLES, "FRIENDLY_TABLE_NAMES must cover every valid table/view"
+
+
+def _build_lineage_summary(
+    tables_touched: list[str], resolved_entities: dict, entity_id: str | None, row_count: int,
+) -> str:
+    """One plain-English sentence describing what data an answer came from —
+    the business-readable counterpart to the raw technical audit grid."""
+    friendly = [FRIENDLY_TABLE_NAMES.get(t, t.replace("_", " ").title()) for t in tables_touched]
+    if not friendly:
+        return ""
+
+    data_desc = " and ".join(friendly) if len(friendly) <= 2 else ", ".join(friendly[:-1]) + f", and {friendly[-1]}"
+
+    filters = []
+    if resolved_entities.get("counterparty_name"):
+        filters.append(f"counterparty '{resolved_entities['counterparty_name']}'")
+    if resolved_entities.get("bank_name"):
+        filters.append(f"bank '{resolved_entities['bank_name']}'")
+    if resolved_entities.get("start_date") and resolved_entities.get("end_date"):
+        filters.append(f"between {resolved_entities['start_date']} and {resolved_entities['end_date']}")
+    if entity_id:
+        filters.append("scoped to the selected customer")
+    filter_desc = f", filtered to {', '.join(filters)}" if filters else ""
+
+    record_desc = f"{row_count} matching record{'s' if row_count != 1 else ''}"
+    return f"This answer was computed from your {data_desc} data{filter_desc}, returning {record_desc}."
 
 
 def _get_llm_model() -> str:
@@ -165,6 +210,13 @@ async def query(request: QueryRequest):
     generator = _get_generator(request.session_id)
     reference_date = get_reference_date()
 
+    known_entity_ids = get_known_entity_ids()
+    if request.entity_id and known_entity_ids is not None and request.entity_id not in known_entity_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Unknown customer entity_id — refresh the entity list and try again.",
+        )
+
     try:
         result = generator.generate(
             user_query=request.query,
@@ -256,6 +308,8 @@ async def query(request: QueryRequest):
                     groq_api_key=GROQ_API_KEY,
                     temperature=0.3,
                     max_tokens=512,
+                    resolved_entities=result.resolved_entities,
+                    entity_id=request.entity_id,
                 )
                 response.answer = answer
                 response.prompt_tokens += synth_usage.get("prompt_tokens", 0)
@@ -263,8 +317,33 @@ async def query(request: QueryRequest):
             except Exception as e:
                 logger.warning("Synthesis failed: %s", e)
                 response.answer = result.query_result.summary_text()
+        elif not result.query_result.success:
+            # Valid SQL that still failed to execute even after every
+            # auto-repair retry — the frontend's generic fallback text would
+            # otherwise wrongly read as success (see static/app.js).
+            retry_word = "attempt" if result.retries == 1 else "attempts"
+            response.answer = (
+                f"I generated a SQL query, but it failed to execute after {result.retries} "
+                f"self-correction {retry_word}: {result.query_result.error} Try rephrasing with a more "
+                f"specific counterparty name, date range, or account detail."
+            )
+
+        response.lineage_summary = _build_lineage_summary(
+            tables_touched=result.query_result.tables_touched,
+            resolved_entities=result.resolved_entities,
+            entity_id=request.entity_id,
+            row_count=result.query_result.row_count,
+        )
     elif result.clarification_needed:
         response.answer = result.clarification_needed
+    elif request.dry_run:
+        # dry_run returns before any execution, so result.query_result is
+        # never set here — without this, the same generic fallback text
+        # would wrongly claim a query ran.
+        response.answer = (
+            "Dry run complete — no query was executed against the database. "
+            "Turn off dry-run to get a real answer."
+        )
 
     response.numbers_grounded = numbers_grounded
 
@@ -418,13 +497,43 @@ async def export_csv(request: ExportRequest):
 
 
 @app.get("/api/counterparties")
-async def list_counterparties():
+async def list_counterparties(entity_id: str | None = None):
     """
     List distinct counterparty names extracted from transaction narration —
     useful for autocomplete. There is no vendor master table in the real
     client schema; these names come from core/description_parser.py.
+
+    entity_id: optional — when given, scopes the list to that customer's own
+    counterparties (feeds the frontend's entity-aware prompt-chip
+    suggestions). Queried live against v_transaction_enriched (which carries
+    entity_id) rather than v_counterparty_lookup, which is deliberately kept
+    entity-agnostic since it's also the entity resolver's global fuzzy-match
+    index (see db/schema.sql).
     """
     try:
+        if entity_id:
+            con = get_connection(readonly=True)
+            try:
+                with con.cursor() as cur:
+                    cur.execute("""
+                        SELECT counterparty_name, rail_type, COUNT(*) AS mention_count
+                        FROM v_transaction_enriched
+                        WHERE counterparty_name IS NOT NULL
+                          AND counterparty_confidence != 'low'
+                          AND entity_id = %s
+                        GROUP BY counterparty_name, rail_type
+                        ORDER BY mention_count DESC
+                    """, [entity_id])
+                    rows = cur.fetchall()
+            finally:
+                con.close()
+            return {
+                "counterparties": [
+                    {"name": row[0], "rail_type": row[1], "mention_count": row[2]}
+                    for row in rows
+                ]
+            }
+
         engine = QueryEngine()
         result = engine.execute("""
             SELECT counterparty_name, rail_type, mention_count
@@ -457,14 +566,17 @@ async def list_entities():
     try:
         engine = QueryEngine()
         result = engine.execute("""
-            SELECT entity_id, account_count, bank_count, banks
+            SELECT entity_id, account_count, bank_count, banks, bank_names
             FROM v_entity_lookup
             ORDER BY account_count DESC, entity_id
         """)
         if result.success:
             return {
                 "entities": [
-                    {"entity_id": row[0], "account_count": row[1], "bank_count": row[2], "banks": row[3]}
+                    {
+                        "entity_id": row[0], "account_count": row[1], "bank_count": row[2],
+                        "banks": row[3], "bank_names": row[4],
+                    }
                     for row in result.rows
                 ]
             }

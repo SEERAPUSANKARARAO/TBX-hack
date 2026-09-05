@@ -67,14 +67,15 @@ CREATE TABLE transaction_derived (
 --            reconciliation_proxy_status, rail_type, counterparty_name,
 --            counterparty_confidence, entity_id, masked_account_number,
 --            program_id, bank_code, bank_name,
---            txn_year, txn_month, txn_quarter, txn_day_of_week
+--            txn_year, txn_month, txn_quarter, txn_day_of_week,
+--            txn_week (YEARWEEK format YYYYWW — group by this for week-wise breakdowns)
 
--- v_counterparty_spend_summary: PRE-AGGREGATED monthly spend per counterparty
--- (debits only, high/medium confidence only). Prefer this for "how much did
--- we spend on X" questions instead of re-aggregating v_transaction_enriched
--- yourself — it avoids join fan-out and double-counting.
---   Columns: counterparty_name, rail_type, txn_year, txn_month,
---            transaction_count, total_spend, avg_transaction,
+-- v_counterparty_spend_summary: PRE-AGGREGATED spend per counterparty, by
+-- month AND week (debits only, high/medium confidence only). Prefer this for
+-- "how much did we spend on X" questions instead of re-aggregating
+-- v_transaction_enriched yourself — it avoids join fan-out and double-counting.
+--   Columns: counterparty_name, rail_type, entity_id, txn_year, txn_month,
+--            txn_week, transaction_count, total_spend, avg_transaction,
 --            min_transaction, max_transaction
 
 -- v_counterparty_lookup: distinct counterparty names with a mention_count.
@@ -188,6 +189,15 @@ CRITICAL RULES:{entity_scope_rule}
 11. If the question is ambiguous, make reasonable assumptions but prefer broader results over empty sets.
 12. If asked about "reconciled"/"unreconciled" transactions, use reconciliation_proxy_status and be
     aware (per the data dictionary) that this is a proxy signal, not a certified accounting status.
+13. Period-wise / trend breakdowns — pick the grouping column that matches what was asked, and always
+    ORDER BY it ascending so the result reads as a trend:
+    - "month-wise" / "monthly" -> GROUP BY txn_year, txn_month
+    - "year-wise" / "yearly" / "annual" -> GROUP BY txn_year
+    - "week-wise" / "weekly" -> GROUP BY txn_week (format YYYYWW) — available on both
+      v_transaction_enriched and v_counterparty_spend_summary
+    - "day-wise" / "daily" -> GROUP BY DATE(transaction_date) on v_transaction_enriched — the
+      pre-aggregated summary view doesn't go finer than week, so use the enriched view directly
+      for daily grouping.
 
 DATABASE SCHEMA:
 {SCHEMA_DDL}

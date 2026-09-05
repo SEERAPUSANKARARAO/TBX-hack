@@ -4,13 +4,99 @@
  */
 
 document.addEventListener("DOMContentLoaded", () => {
-  const sessionId = "session-" + Math.random().toString(36).substring(2, 9);
+  function newSessionId() {
+    return "session-" + Math.random().toString(36).substring(2, 9);
+  }
+
+  let sessionId = newSessionId();
   document.getElementById("session-badge").textContent = `Session: ${sessionId.substring(0, 12)}`;
+
+  // Bumped on every new query submission AND on resetSessionState() (customer
+  // switch). A response is only rendered if its captured epoch still matches
+  // the current one — discards stale/out-of-order responses so a slow reply
+  // from a previous entity/query can't overwrite what's on screen now.
+  let requestEpoch = 0;
 
   let currentSQL = "";
   let currentResultData = null;
   let currentEntityId = null;
   const DEMO_PASSWORD = "1234"; // Shared, public demo gate — not a real credential. No auth in this build.
+
+  const WELCOME_HTML = `
+    <div class="message-bubble bot-bubble welcome-message">
+      <div class="bot-avatar">FQ</div>
+      <div class="message-content">
+        <p><strong>Welcome to FinQuery AI!</strong></p>
+        <p>Ask any question in plain English about bank transactions, balances, counterparties, or reconciliation. Every number is deterministically computed in <strong>MySQL</strong> and verified against the result before you see it — account numbers and UTRs are always masked.</p>
+      </div>
+    </div>
+  `;
+  const ANSWER_PLACEHOLDER = "Submit a query on the left to inspect real-time deterministic financial insights.";
+
+  // The original static chip set — used whenever no specific customer is
+  // selected ("All customers (unscoped)"), and restored on customer switch
+  // before entity-specific chips (if any) are fetched.
+  const DEFAULT_PROMPT_CHIPS = [
+    { label: "Amazon Spend Q", query: "How much did we send to Amazon Retail India this quarter?" },
+    { label: "Top 5 Counterparties", query: "Who are our top 5 counterparties by total spend?" },
+    { label: "Unreconciled > 50k", query: "Show unreconciled transactions over 50000." },
+    { label: "HDFC Balance", query: "What is our available balance at HDFC Bank?" },
+    { label: "Credit vs Debit", query: "Break down credits and debits by bank this year." },
+    { label: "Largest Selection Payment", query: "What's the largest payment we've made to Selection Electronics?" },
+    { label: "Unknown Counterparty (test)", query: "What is our spend on Quantum Retail Ltd?" },
+  ];
+
+  // Full /api/entities payload, kept around so a customer switch can build
+  // entity-specific prompt chips (bank_names, etc.) without re-fetching.
+  let entitiesData = [];
+
+  function renderPromptChips(chips) {
+    chipsScroll.innerHTML = "";
+    chips.forEach(({ label, query }) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "prompt-chip";
+      btn.dataset.query = query;
+      btn.textContent = label;
+      btn.addEventListener("click", () => {
+        queryInput.value = query;
+        queryForm.dispatchEvent(new Event("submit"));
+      });
+      chipsScroll.appendChild(btn);
+    });
+  }
+
+  // Rebuild the chip row from this entity's real data — falls back to the
+  // generic default set when unscoped or when nothing entity-specific comes
+  // back (e.g. a brand-new customer with no counterparty history yet).
+  async function refreshPromptChipsForEntity(entityId) {
+    if (!entityId) {
+      renderPromptChips(DEFAULT_PROMPT_CHIPS);
+      return;
+    }
+
+    const chips = [
+      { label: "Unreconciled > 50k", query: "Show unreconciled transactions over 50000." },
+    ];
+
+    const entity = entitiesData.find((e) => e.entity_id === entityId);
+    if (entity && entity.bank_names) {
+      const firstBank = entity.bank_names.split(",")[0].trim();
+      chips.push({ label: `${firstBank} Balance`, query: `What is our available balance at ${firstBank}?` });
+    }
+
+    try {
+      const resp = await fetch(`/api/counterparties?entity_id=${encodeURIComponent(entityId)}`);
+      const data = await resp.json();
+      (data.counterparties || []).slice(0, 2).forEach((c) => {
+        chips.push({ label: `${c.name} Spend`, query: `How much did we send to ${c.name} this quarter?` });
+      });
+    } catch (e) {
+      // Non-fatal — falls back to whatever chips were already built above.
+    }
+
+    renderPromptChips(chips.length > 1 ? chips : DEFAULT_PROMPT_CHIPS);
+  }
 
   // DOM Elements
   const queryForm = document.getElementById("query-form");
@@ -41,6 +127,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const metaTokens = document.getElementById("meta-tokens");
   const metaColumns = document.getElementById("meta-columns");
   const metaRecords = document.getElementById("meta-records");
+  const lineageSummaryEl = document.getElementById("lineage-summary");
+  const chipsScroll = document.getElementById("chips-scroll");
   const confidenceReasonsCard = document.getElementById("confidence-reasons-card");
   const confidenceReasonsList = document.getElementById("confidence-reasons-list");
   const btnConfWhy = document.getElementById("btn-conf-why");
@@ -91,9 +179,73 @@ document.addEventListener("DOMContentLoaded", () => {
     lockPasswordInput.value = "";
     lockScreen.classList.add("hidden");
     queryInput.focus();
+    refreshPromptChipsForEntity(currentEntityId);
+  }
+
+  // Reset all per-session UI/state back to its fresh-load defaults and mint
+  // a new session_id, so a customer switch can never leak the previous
+  // customer's chat, dashboard, or backend conversation_history into the
+  // new one.
+  function resetSessionState() {
+    requestEpoch++; // discard any in-flight request's response
+
+    sessionId = newSessionId();
+    document.getElementById("session-badge").textContent = `Session: ${sessionId.substring(0, 12)}`;
+
+    chatStream.innerHTML = WELCOME_HTML;
+
+    currentSQL = "";
+    currentResultData = null;
+
+    answerText.textContent = ANSWER_PLACEHOLDER;
+    timingTag.textContent = "0.0 ms";
+    groundedTag.classList.add("hidden");
+    answerCard.classList.remove("ungrounded");
+    entityTagsRow.innerHTML = "";
+    entityTagsRow.classList.add("hidden");
+    followupChips.innerHTML = "";
+    followupRow.classList.add("hidden");
+    confidenceBadge.classList.add("hidden");
+    confidenceReasonsList.innerHTML = "";
+    confidenceReasonsCard.classList.add("hidden");
+    anomalyList.innerHTML = "";
+    anomalyContainer.classList.add("hidden");
+
+    executedSqlCode.textContent = "-- Executed SQL query will appear here";
+    validationPill.textContent = "Read-Only Enforced";
+    validationPill.className = "pill-badge valid";
+    lineageSummaryEl.textContent = "";
+    lineageSummaryEl.classList.add("hidden");
+    metaTables.textContent = "—";
+    metaLatency.textContent = "0 ms";
+    metaLlm.textContent = "Ollama";
+    metaRetries.textContent = "0";
+    metaTokens.textContent = "0 / 0";
+    metaColumns.textContent = "—";
+    metaColumns.title = "";
+    metaRecords.textContent = "0";
+
+    tableHead.innerHTML = "";
+    tableBody.innerHTML = "";
+    tablePlaceholder.classList.remove("hidden");
+    dataTable.classList.add("hidden");
+    rowCountBadge.textContent = "0 rows";
+
+    btnExportCsv.disabled = true;
+    btnCopySql.disabled = true;
+
+    renderPromptChips(DEFAULT_PROMPT_CHIPS);
   }
 
   btnSwitchCustomer.addEventListener("click", () => {
+    // Best-effort — drop the outgoing customer's backend conversation
+    // history. Fire-and-forget: the frontend reset below doesn't depend on
+    // this succeeding, since resetSessionState() also mints a brand-new
+    // session_id that the backend has never seen.
+    fetch(`/api/history?session_id=${sessionId}`, { method: "DELETE" }).catch(() => {});
+
+    resetSessionState();
+
     lockScreen.classList.remove("hidden");
     lockPasswordInput.value = "";
     lockError.classList.add("hidden");
@@ -121,6 +273,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const dryRun = dryRunToggle.checked;
 
+    // Captured now so a response that comes back after a newer query (or a
+    // customer switch, which also bumps requestEpoch) can be recognized as
+    // stale and discarded instead of overwriting what's currently on screen.
+    const myEpoch = ++requestEpoch;
+    const requestSessionId = sessionId;
+
     // Append user message bubble
     appendMessage(query, "user");
     queryInput.value = "";
@@ -137,7 +295,7 @@ document.addEventListener("DOMContentLoaded", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: query,
-          session_id: sessionId,
+          session_id: requestSessionId,
           dry_run: dryRun,
           entity_id: currentEntityId,
         }),
@@ -151,9 +309,12 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await response.json();
       const clientDuration = Math.round(performance.now() - startTime);
 
+      if (myEpoch !== requestEpoch) return; // a newer query or a session switch superseded this one
+
       updateBotMessage(botMsgId, data.answer || "Query executed successfully.");
       renderDashboard(data, clientDuration);
     } catch (err) {
+      if (myEpoch !== requestEpoch) return;
       updateBotMessage(botMsgId, `⚠️ Error: ${err.message}`);
       answerText.textContent = `Error processing query: ${err.message}`;
       timingTag.textContent = "Error";
@@ -232,6 +393,10 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       if (!data.confidence.reasons || data.confidence.reasons.length === 0) {
         confidenceReasonsCard.classList.add("hidden");
+      } else {
+        // HIGH confidence's justification is shown immediately, no click
+        // needed; MEDIUM/LOW stay collapsed behind the "?" toggle.
+        confidenceReasonsCard.classList.toggle("hidden", data.confidence.level !== "HIGH");
       }
     } else {
       confidenceBadge.classList.add("hidden");
@@ -256,6 +421,14 @@ document.addEventListener("DOMContentLoaded", () => {
     executedSqlCode.textContent = data.extracted_sql || "-- No SQL extracted (e.g. clarification needed)";
     validationPill.textContent = data.sql_valid ? "Read-Only Enforced" : (data.validation_error ? "Validation Failed" : "Dry-Run");
     validationPill.className = `pill-badge ${data.sql_valid ? "valid" : "error"}`;
+
+    if (data.lineage_summary) {
+      lineageSummaryEl.textContent = data.lineage_summary;
+      lineageSummaryEl.classList.remove("hidden");
+    } else {
+      lineageSummaryEl.textContent = "";
+      lineageSummaryEl.classList.add("hidden");
+    }
 
     if (data.query_result) {
       metaTables.textContent = (data.query_result.tables_touched || []).join(", ") || "None";
@@ -511,7 +684,8 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const resp = await fetch("/api/entities");
       const data = await resp.json();
-      (data.entities || []).forEach((e) => {
+      entitiesData = data.entities || [];
+      entitiesData.forEach((e) => {
         const opt = document.createElement("option");
         opt.value = e.entity_id;
         const shortId = e.entity_id.substring(0, 8);

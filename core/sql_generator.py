@@ -16,9 +16,12 @@ import httpx
 
 from core.prompts import build_system_prompt, build_user_message, build_repair_prompt
 from core.few_shot_examples import format_few_shot_messages
-from core.sql_validator import extract_sql_from_response, validate_sql, sanitize_sql, enforce_row_limit, ValidationResult
+from core.sql_validator import (
+    extract_sql_from_response, validate_sql, validate_entity_scope,
+    sanitize_sql, enforce_row_limit,
+)
 from core.query_engine import QueryEngine, QueryResult
-from core.entity_resolver import EntityResolver
+from core.entity_resolver import EntityResolver, detect_referential_ambiguity
 from core.data_bounds import get_date_range
 from core.llm_http import post_with_retry
 from core.input_classifier import classify_input
@@ -154,17 +157,9 @@ class SQLGenerator:
 
         def _validate(candidate_sql: str):
             v = validate_sql(candidate_sql)
-            if v.is_valid and entity_id and entity_id not in candidate_sql:
-                return ValidationResult(
-                    is_valid=False, sql=candidate_sql,
-                    error=(
-                        f"BLOCKED: a customer is selected (entity_id='{entity_id}') but the query doesn't "
-                        f"filter by it. Every account/transaction reference must be scoped to this entity_id "
-                        f"— join to account and add `account.entity_id = '{entity_id}'` (or filter directly "
-                        f"on the enriched views' entity_id column)."
-                    ),
-                )
-            return v
+            if not v.is_valid:
+                return v
+            return validate_entity_scope(candidate_sql, entity_id)
 
         # ── Step 0: Pre-pipeline classification (no LLM call) ──
         # Greetings and prompt-injection attempts never reach entity
@@ -194,6 +189,17 @@ class SQLGenerator:
                 )
             result.total_time_ms = (time.perf_counter() - start_time) * 1000
             return result
+
+        # A referential follow-up ("compare that", "what about them") has
+        # nothing to resolve against on the first turn of a session — only
+        # check when neither conversation_history nor this turn's own entity
+        # resolution gives it something concrete to anchor to.
+        if not self.conversation_history and not entities.counterparty_name and not entities.bank_code:
+            ambiguity_msg = detect_referential_ambiguity(user_query)
+            if ambiguity_msg:
+                result.clarification_needed = ambiguity_msg
+                result.total_time_ms = (time.perf_counter() - start_time) * 1000
+                return result
 
         # ── Step 2: Build Messages ──
         min_date, max_date = get_date_range()

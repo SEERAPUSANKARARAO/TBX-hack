@@ -119,6 +119,38 @@ WHERE description LIKE '%IMPS charges%'
   AND txn_year = YEAR(DATE '2026-09-05');""",
         "explanation": "\"IMPS charges\" is a bank-initiated fee description, not a counterparty — counterparty_name is NULL for these rows, so filtering on it would silently miss every matching transaction. Filter on the raw description column instead."
     },
+
+    # ── Example 8: Week-wise breakdown ──
+    {
+        "question": "Show my weekly spend on Amazon Retail India this quarter.",
+        "sql": """SELECT
+    txn_week,
+    SUM(total_spend) AS total_spend,
+    SUM(transaction_count) AS transaction_count
+FROM v_counterparty_spend_summary
+WHERE counterparty_name LIKE '%amazon retail india%'
+  AND txn_year = YEAR(DATE '2026-09-05')
+  AND txn_month IN (7, 8, 9)
+GROUP BY txn_week
+ORDER BY txn_week ASC;""",
+        "explanation": "\"Weekly\" -> GROUP BY txn_week (available on the pre-aggregated summary view, format YYYYWW), ordered ascending so it reads as a trend."
+    },
+
+    # ── Example 9: Day-wise breakdown ──
+    {
+        "question": "Show daily transaction totals for HDFC Bank this month.",
+        "sql": """SELECT
+    DATE(transaction_date) AS txn_date,
+    COUNT(*) AS transaction_count,
+    SUM(transaction_amount) AS total_amount
+FROM v_transaction_enriched
+WHERE bank_name LIKE '%hdfc%'
+  AND txn_year = YEAR(DATE '2026-09-05')
+  AND txn_month = MONTH(DATE '2026-09-05')
+GROUP BY DATE(transaction_date)
+ORDER BY txn_date ASC;""",
+        "explanation": "\"Daily\" needs day-level granularity, which the pre-aggregated summary view doesn't have (it only goes down to txn_week) — group by DATE(transaction_date) on v_transaction_enriched directly instead."
+    },
 ]
 
 

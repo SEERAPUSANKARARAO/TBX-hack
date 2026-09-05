@@ -99,10 +99,11 @@ SELECT
     a.program_id,
     a.bank_code,
     b.bank_name,
-    YEAR(t.transaction_date)    AS txn_year,
-    MONTH(t.transaction_date)   AS txn_month,
+    YEAR(t.transaction_date)     AS txn_year,
+    MONTH(t.transaction_date)    AS txn_month,
     QUARTER(t.transaction_date) AS txn_quarter,
-    DAYNAME(t.transaction_date) AS txn_day_of_week
+    DAYNAME(t.transaction_date) AS txn_day_of_week,
+    YEARWEEK(t.transaction_date, 3) AS txn_week  -- ISO-ish YYYYWW; group by this for week-wise breakdowns
 FROM transaction t
 LEFT JOIN transaction_derived d ON t.transaction_id = d.transaction_id
 LEFT JOIN account a ON t.account_id = a.account_id
@@ -119,6 +120,7 @@ SELECT
     entity_id,
     txn_year,
     txn_month,
+    txn_week,
     COUNT(*)               AS transaction_count,
     SUM(transaction_amount) AS total_spend,
     AVG(transaction_amount) AS avg_transaction,
@@ -128,11 +130,15 @@ FROM v_transaction_enriched
 WHERE transaction_type = 'debit'
   AND counterparty_name IS NOT NULL
   AND counterparty_confidence != 'low'
-GROUP BY counterparty_name, rail_type, entity_id, txn_year, txn_month;
+GROUP BY counterparty_name, rail_type, entity_id, txn_year, txn_month, txn_week;
 
 -- Lookup of distinct extracted counterparty names — feeds the entity
 -- resolver's fuzzy-match index (replaces a vendor_list table, which
--- doesn't exist in the real client schema).
+-- doesn't exist in the real client schema). Deliberately entity-agnostic
+-- (one row per name globally) — this is the resolver's global search index,
+-- not a per-customer view. api/main.py's /api/counterparties?entity_id=
+-- queries v_transaction_enriched directly instead when it needs a
+-- per-customer counterparty list, so this view's grain stays untouched.
 CREATE OR REPLACE VIEW v_counterparty_lookup AS
 SELECT
     counterparty_name,
@@ -159,9 +165,11 @@ GROUP BY reconciliation_proxy_status;
 -- is the stand-in for "which customer am I looking at").
 CREATE OR REPLACE VIEW v_entity_lookup AS
 SELECT
-    entity_id,
-    COUNT(DISTINCT account_id) AS account_count,
-    COUNT(DISTINCT bank_code)  AS bank_count,
-    GROUP_CONCAT(DISTINCT bank_code ORDER BY bank_code SEPARATOR ', ') AS banks
-FROM account
-GROUP BY entity_id;
+    a.entity_id,
+    COUNT(DISTINCT a.account_id) AS account_count,
+    COUNT(DISTINCT a.bank_code)  AS bank_count,
+    GROUP_CONCAT(DISTINCT a.bank_code ORDER BY a.bank_code SEPARATOR ', ') AS banks,
+    GROUP_CONCAT(DISTINCT b.bank_name ORDER BY b.bank_name SEPARATOR ', ') AS bank_names
+FROM account a
+LEFT JOIN bank b ON a.bank_code = b.bank_code
+GROUP BY a.entity_id;

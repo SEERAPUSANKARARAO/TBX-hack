@@ -96,6 +96,24 @@ def _verify_numbers_grounded(answer: str, allowed_numbers: set[str]) -> bool:
     return True
 
 
+def _describe_filters(resolved_entities: dict | None, entity_id: str | None) -> str:
+    """Short human-readable description of what was searched for, built from
+    whichever of counterparty/bank/dates were actually resolved — used to
+    make the "no data" message name what came up empty instead of a fully
+    generic apology."""
+    resolved_entities = resolved_entities or {}
+    parts = []
+    if resolved_entities.get("counterparty_name"):
+        parts.append(f"counterparty '{resolved_entities['counterparty_name']}'")
+    if resolved_entities.get("bank_name"):
+        parts.append(f"bank '{resolved_entities['bank_name']}'")
+    if resolved_entities.get("start_date") and resolved_entities.get("end_date"):
+        parts.append(f"between {resolved_entities['start_date']} and {resolved_entities['end_date']}")
+    if entity_id:
+        parts.append("for the selected customer")
+    return " ".join(parts)
+
+
 def synthesize_response(
     user_query: str,
     sql: str,
@@ -110,9 +128,17 @@ def synthesize_response(
     groq_api_key: str = "",
     temperature: float = 0.3,
     max_tokens: int = 512,
+    resolved_entities: dict | None = None,
+    entity_id: str | None = None,
 ) -> tuple[str, bool, dict]:
     """
     Generate a natural language answer from SQL results.
+
+    Args:
+        resolved_entities, entity_id: optional context (counterparty/bank/
+            dates resolved for this query, and the selected customer, if
+            any) used only to make the 0-row "no data" message name what
+            was actually searched for — not used when rows are returned.
 
     Returns:
         (answer_text, numbers_grounded, usage) — numbers_grounded is False
@@ -126,13 +152,20 @@ def synthesize_response(
         return f"I encountered an error running the query: {query_result.get('error', 'Unknown error')}", True, empty_usage
 
     if query_result.get("row_count", 0) == 0:
-        return (
-            "I couldn't find any matching records for that. This could mean the data doesn't "
-            "exist for the filters you asked about, or a date range/counterparty name might "
-            "need adjusting — I'd rather say so than guess.",
-            True,
-            empty_usage,
-        )
+        filters_desc = _describe_filters(resolved_entities, entity_id)
+        if filters_desc:
+            message = (
+                f"I couldn't find any transactions matching {filters_desc}. This could mean the data "
+                f"doesn't exist for that combination, or a name/date might need adjusting — I'd rather "
+                f"say so than guess."
+            )
+        else:
+            message = (
+                "I couldn't find any matching records for that. This could mean the data doesn't "
+                "exist for the filters you asked about, or a date range/counterparty name might "
+                "need adjusting — I'd rather say so than guess."
+            )
+        return message, True, empty_usage
 
     rows = query_result.get("rows", [])[:15]
     columns = query_result.get("columns", [])
