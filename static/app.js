@@ -58,6 +58,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const metaTables = document.getElementById("meta-tables");
   const metaLatency = document.getElementById("meta-latency");
   const metaLlm = document.getElementById("meta-llm");
+  const metaModel = document.getElementById("meta-model");
+  const providerName = value => ({openrouter:"OpenRouter",ollama:"Ollama",openai:"OpenAI",groq:"Groq"}[value] || value || "Unavailable");
   const metaRetries = document.getElementById("meta-retries");
   const metaTokens = document.getElementById("meta-tokens");
   const metaColumns = document.getElementById("meta-columns");
@@ -151,7 +153,8 @@ document.addEventListener("DOMContentLoaded", () => {
     lineageSummaryEl.classList.add("hidden");
     metaTables.textContent = "—";
     metaLatency.textContent = "0 ms";
-    metaLlm.textContent = "Ollama";
+    metaLlm.textContent = "Not requested";
+    metaModel.textContent = "Not requested";
     metaRetries.textContent = "0";
     metaTokens.textContent = "0 / 0";
     metaColumns.textContent = "—";
@@ -366,7 +369,9 @@ document.addEventListener("DOMContentLoaded", () => {
       metaColumns.textContent = "—";
       metaRecords.textContent = "0";
     }
-    metaLlm.textContent = data.llm_model || data.llm_provider || "Ollama";
+    const noModel = data.direct_response_kind || data.llm_provider === "dry_run" || (!data.llm_provider && !data.llm_model);
+    metaLlm.textContent = noModel ? "No model call" : providerName(data.llm_provider);
+    metaModel.textContent = noModel ? "Not used" : (data.llm_model || "Unavailable");
     metaRetries.textContent = `${data.retries || 0}`;
     metaTokens.textContent = `${data.prompt_tokens || 0} / ${data.completion_tokens || 0}`;
 
@@ -592,9 +597,11 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const resp = await fetch("/api/health");
       const data = await resp.json();
+      activeModelText.textContent = `${providerName(data.llm_provider)} · ${data.llm_model || "Model unavailable"}`;
+      activeModelText.title = "Configured provider and model; request details appear in the audit panel.";
       if (data.status === "ok") {
         dbStatusText.textContent = `MySQL: ${data.total_rows} Rows (${data.tables} Tables)`;
-        activeModelText.textContent = data.llm_model || data.llm_provider;
+
       }
     } catch (e) {
       dbStatusText.textContent = "DB Status: Offline";
