@@ -33,71 +33,6 @@ document.addEventListener("DOMContentLoaded", () => {
   `;
   const ANSWER_PLACEHOLDER = "Submit a query on the left to inspect real-time deterministic financial insights.";
 
-  // The original static chip set — used whenever no specific customer is
-  // selected ("All customers (unscoped)"), and restored on customer switch
-  // before entity-specific chips (if any) are fetched.
-  const DEFAULT_PROMPT_CHIPS = [
-    { label: "Amazon Spend Q", query: "How much did we send to Amazon Retail India this quarter?" },
-    { label: "Top 5 Counterparties", query: "Who are our top 5 counterparties by total spend?" },
-    { label: "Unreconciled > 50k", query: "Show unreconciled transactions over 50000." },
-    { label: "HDFC Balance", query: "What is our available balance at HDFC Bank?" },
-    { label: "Credit vs Debit", query: "Break down credits and debits by bank this year." },
-    { label: "Largest Selection Payment", query: "What's the largest payment we've made to Selection Electronics?" },
-    { label: "Unknown Counterparty (test)", query: "What is our spend on Quantum Retail Ltd?" },
-  ];
-
-  // Full /api/entities payload, kept around so a customer switch can build
-  // entity-specific prompt chips (bank_names, etc.) without re-fetching.
-  let entitiesData = [];
-
-  function renderPromptChips(chips) {
-    chipsScroll.innerHTML = "";
-    chips.forEach(({ label, query }) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "prompt-chip";
-      btn.dataset.query = query;
-      btn.textContent = label;
-      btn.addEventListener("click", () => {
-        queryInput.value = query;
-        queryForm.dispatchEvent(new Event("submit"));
-      });
-      chipsScroll.appendChild(btn);
-    });
-  }
-
-  // Rebuild the chip row from this entity's real data — falls back to the
-  // generic default set when unscoped or when nothing entity-specific comes
-  // back (e.g. a brand-new customer with no counterparty history yet).
-  async function refreshPromptChipsForEntity(entityId) {
-    if (!entityId) {
-      renderPromptChips(DEFAULT_PROMPT_CHIPS);
-      return;
-    }
-
-    const chips = [
-      { label: "Unreconciled > 50k", query: "Show unreconciled transactions over 50000." },
-    ];
-
-    const entity = entitiesData.find((e) => e.entity_id === entityId);
-    if (entity && entity.bank_names) {
-      const firstBank = entity.bank_names.split(",")[0].trim();
-      chips.push({ label: `${firstBank} Balance`, query: `What is our available balance at ${firstBank}?` });
-    }
-
-    try {
-      const resp = await fetch(`/api/counterparties?entity_id=${encodeURIComponent(entityId)}`);
-      const data = await resp.json();
-      (data.counterparties || []).slice(0, 2).forEach((c) => {
-        chips.push({ label: `${c.name} Spend`, query: `How much did we send to ${c.name} this quarter?` });
-      });
-    } catch (e) {
-      // Non-fatal — falls back to whatever chips were already built above.
-    }
-
-    renderPromptChips(chips.length > 1 ? chips : DEFAULT_PROMPT_CHIPS);
-  }
-
   // DOM Elements
   const queryForm = document.getElementById("query-form");
   const queryInput = document.getElementById("user-query-input");
@@ -128,7 +63,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const metaColumns = document.getElementById("meta-columns");
   const metaRecords = document.getElementById("meta-records");
   const lineageSummaryEl = document.getElementById("lineage-summary");
-  const chipsScroll = document.getElementById("chips-scroll");
   const confidenceReasonsCard = document.getElementById("confidence-reasons-card");
   const confidenceReasonsList = document.getElementById("confidence-reasons-list");
   const btnConfWhy = document.getElementById("btn-conf-why");
@@ -179,7 +113,6 @@ document.addEventListener("DOMContentLoaded", () => {
     lockPasswordInput.value = "";
     lockScreen.classList.add("hidden");
     queryInput.focus();
-    refreshPromptChipsForEntity(currentEntityId);
   }
 
   // Reset all per-session UI/state back to its fresh-load defaults and mint
@@ -234,7 +167,6 @@ document.addEventListener("DOMContentLoaded", () => {
     btnExportCsv.disabled = true;
     btnCopySql.disabled = true;
 
-    renderPromptChips(DEFAULT_PROMPT_CHIPS);
   }
 
   btnSwitchCustomer.addEventListener("click", () => {
@@ -255,14 +187,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // Confidence "why?" toggle
   btnConfWhy.addEventListener("click", () => {
     confidenceReasonsCard.classList.toggle("hidden");
-  });
-
-  // Prompt Chips
-  document.querySelectorAll(".prompt-chip").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      queryInput.value = chip.dataset.query;
-      queryForm.dispatchEvent(new Event("submit"));
-    });
   });
 
   // Query Form Submit
@@ -684,8 +608,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const resp = await fetch("/api/entities");
       const data = await resp.json();
-      entitiesData = data.entities || [];
-      entitiesData.forEach((e) => {
+      (data.entities || []).forEach((e) => {
         const opt = document.createElement("option");
         opt.value = e.entity_id;
         const shortId = e.entity_id.substring(0, 8);
