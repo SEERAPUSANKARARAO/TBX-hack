@@ -9,6 +9,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let currentSQL = "";
   let currentResultData = null;
+  let currentEntityId = null;
+  const DEMO_PASSWORD = "1234"; // Shared, public demo gate — not a real credential. No auth in this build.
 
   // DOM Elements
   const queryForm = document.getElementById("query-form");
@@ -55,12 +57,48 @@ document.addEventListener("DOMContentLoaded", () => {
   const schemaModalContent = document.getElementById("schema-modal-content");
   const dbStatusText = document.getElementById("db-status-text");
   const activeModelText = document.getElementById("active-model-text");
-  const entitySelect = document.getElementById("entity-select");
+  const lockScreen = document.getElementById("lock-screen");
+  const lockEntitySelect = document.getElementById("lock-entity-select");
+  const lockPasswordInput = document.getElementById("lock-password-input");
+  const lockError = document.getElementById("lock-error");
+  const btnLockSubmit = document.getElementById("btn-lock-submit");
+  const entityLockedText = document.getElementById("entity-locked-text");
+  const btnSwitchCustomer = document.getElementById("btn-switch-customer");
 
   // Initial Health Check
   fetchHealth();
   fetchEntities();
   fetchAccuracy();
+
+  // Lock Screen — demo gate only (see comment in index.html). Populates the
+  // dropdown from /api/entities (already fetched above), then on submit
+  // just checks the shared password and records which entity to scope to.
+  btnLockSubmit.addEventListener("click", attemptUnlock);
+  lockPasswordInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") attemptUnlock();
+  });
+
+  function attemptUnlock() {
+    if (lockPasswordInput.value !== DEMO_PASSWORD) {
+      lockError.textContent = "Incorrect password.";
+      lockError.classList.remove("hidden");
+      return;
+    }
+    currentEntityId = lockEntitySelect.value || null;
+    const label = lockEntitySelect.options[lockEntitySelect.selectedIndex].textContent;
+    entityLockedText.textContent = label;
+    lockError.classList.add("hidden");
+    lockPasswordInput.value = "";
+    lockScreen.classList.add("hidden");
+    queryInput.focus();
+  }
+
+  btnSwitchCustomer.addEventListener("click", () => {
+    lockScreen.classList.remove("hidden");
+    lockPasswordInput.value = "";
+    lockError.classList.add("hidden");
+    lockPasswordInput.focus();
+  });
 
   // Confidence "why?" toggle
   btnConfWhy.addEventListener("click", () => {
@@ -101,7 +139,7 @@ document.addEventListener("DOMContentLoaded", () => {
           query: query,
           session_id: sessionId,
           dry_run: dryRun,
-          entity_id: entitySelect.value || null,
+          entity_id: currentEntityId,
         }),
       });
 
@@ -466,9 +504,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Fetch Entities — populates the "Customer" dropdown. No login in this
-  // build (see README), so this is how a demo user picks which customer's
-  // data to scope questions to; it's a usability convenience, not auth.
+  // Fetch Entities — populates the lock screen's "Customer" dropdown. No
+  // real login in this build (see README); the lock screen is a UX gate
+  // that decides which customer's data a session is scoped to, not auth.
   async function fetchEntities() {
     try {
       const resp = await fetch("/api/entities");
@@ -479,7 +517,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const shortId = e.entity_id.substring(0, 8);
         const acctLabel = e.account_count === 1 ? "1 account" : `${e.account_count} accounts`;
         opt.textContent = `${shortId}… — ${acctLabel} (${e.banks})`;
-        entitySelect.appendChild(opt);
+        lockEntitySelect.appendChild(opt);
       });
     } catch (e) {
       // Non-fatal — the app still works fully unscoped without this.

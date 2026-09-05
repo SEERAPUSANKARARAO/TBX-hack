@@ -279,40 +279,165 @@ body {
   border-radius: var(--radius-sm);
 }
 
-/* Entity Selector */
+/* Locked Customer Indicator (set via the lock screen) */
 .entity-selector-bar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 10px 18px;
   border-bottom: 1px solid var(--border-subtle);
   background: rgba(139, 92, 246, 0.05);
 }
 
-.entity-select-label {
+.entity-locked-label {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 0.75rem;
+  gap: 6px;
+  font-size: 0.78rem;
   font-weight: 600;
   color: var(--accent-purple);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-#entity-select {
-  flex: 1;
+.btn-switch-customer {
+  flex-shrink: 0;
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  color: var(--accent-purple);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-switch-customer:hover {
+  background: rgba(139, 92, 246, 0.2);
+}
+
+/* Lock Screen */
+.lock-screen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-main);
+  background-image:
+    radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.1) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.12) 0px, transparent 50%);
+}
+
+.lock-card {
+  width: 90%;
+  max-width: 380px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 32px 28px;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+}
+
+.lock-logo {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 12px;
+}
+
+.lock-logo .logo-icon {
+  width: 26px;
+  height: 26px;
+}
+
+.lock-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.lock-subtitle {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.lock-label {
+  align-self: flex-start;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-top: 14px;
+  margin-bottom: 6px;
+}
+
+#lock-entity-select,
+#lock-password-input {
+  width: 100%;
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 5px 8px;
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
   color: var(--text-primary);
-  font-size: 0.8rem;
+  font-size: 0.88rem;
   font-family: var(--font-mono);
 }
 
-#entity-select:focus {
+#lock-entity-select:focus,
+#lock-password-input:focus {
   outline: none;
   border-color: var(--accent-purple);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+}
+
+.lock-error {
+  align-self: flex-start;
+  color: var(--accent-red);
+  font-size: 0.78rem;
+  margin-top: 8px;
+}
+
+.lock-submit-btn {
+  width: 100%;
+  margin-top: 20px;
+  background: linear-gradient(135deg, #10B981, #059669);
+  color: #ffffff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 11px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.2s;
+}
+
+.lock-submit-btn:hover {
+  transform: translateY(-1px);
+  background: linear-gradient(135deg, #059669, #047857);
+}
+
+.lock-hint {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 14px;
+}
+
+.lock-hint code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
 }
 
 /* Chips */

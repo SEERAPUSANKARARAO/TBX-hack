@@ -11,6 +11,36 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <!-- LOCK SCREEN — a demo-only UX gate, not real authentication. There is
+       no per-customer security model in this build (no login/auth is an
+       explicit out-of-scope item); this just makes "pick a customer" feel
+       like a proper session instead of a header dropdown you could change
+       mid-conversation. The password is intentionally shared/public. -->
+  <div id="lock-screen" class="lock-screen-overlay">
+    <div class="lock-card">
+      <div class="logo-badge lock-logo">
+        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+        </svg>
+      </div>
+      <h1 class="lock-title">FinQuery <span class="gradient-text">AI</span></h1>
+      <p class="lock-subtitle">Pick a customer to continue. Demo gate only — not real authentication.</p>
+
+      <label for="lock-entity-select" class="lock-label">Customer</label>
+      <select id="lock-entity-select">
+        <option value="">All customers (unscoped)</option>
+      </select>
+
+      <label for="lock-password-input" class="lock-label">Password</label>
+      <input type="password" id="lock-password-input" placeholder="Enter password" autocomplete="off" />
+
+      <div id="lock-error" class="lock-error hidden">Incorrect password.</div>
+
+      <button id="btn-lock-submit" class="lock-submit-btn" type="button">Unlock</button>
+      <p class="lock-hint">Demo password: <code>1234</code> (same for every customer — not a real credential)</p>
+    </div>
+  </div>
+
   <div class="app-container">
     <!-- TOP HEADER -->
     <header class="app-header">
@@ -62,18 +92,27 @@
           <span class="session-tag" id="session-badge">Session: default</span>
         </div>
 
-        <!-- Entity Selector — stand-in for login (there is no auth in this build) -->
+        <!-- Locked Customer Indicator — set by the lock screen, not directly editable here -->
         <div class="entity-selector-bar">
-          <label for="entity-select" class="entity-select-label" title="No login in this build — pick which customer's data to explore">
+          <div class="entity-locked-label" title="Set at login — use Switch to change it">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-            Customer
-          </label>
-          <select id="entity-select">
-            <option value="">All customers (unscoped)</option>
-          </select>
+            <span id="entity-locked-text">All customers (unscoped)</span>
+          </div>
+          <button id="btn-switch-customer" class="btn-switch-customer" type="button">Switch</button>
         </div>
 
-        <!-- Quick Prompt Chips -->
+        <!-- Chat Messages Stream -->
+        <div class="chat-messages" id="chat-stream">
+          <div class="message-bubble bot-bubble welcome-message">
+            <div class="bot-avatar">FQ</div>
+            <div class="message-content">
+              <p><strong>Welcome to FinQuery AI!</strong></p>
+              <p>Ask any question in plain English about bank transactions, balances, counterparties, or reconciliation. Every number is deterministically computed in <strong>MySQL</strong> and verified against the result before you see it — account numbers and UTRs are always masked.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Prompt Chips — directly above the input bar, where you're about to type -->
         <div class="prompt-chips-container">
           <span class="chips-title">Suggested Inquiries:</span>
           <div class="chips-scroll">
@@ -86,17 +125,6 @@
             <button class="prompt-chip" data-query="What is our spend on Quantum Retail Ltd?">Unknown Counterparty (test)</button>
           </div>
           <span class="chips-hint">💡 After any answer, try a follow-up like "and last month?" — it reuses the same filters.</span>
-        </div>
-
-        <!-- Chat Messages Stream -->
-        <div class="chat-messages" id="chat-stream">
-          <div class="message-bubble bot-bubble welcome-message">
-            <div class="bot-avatar">FQ</div>
-            <div class="message-content">
-              <p><strong>Welcome to FinQuery AI!</strong></p>
-              <p>Ask any question in plain English about bank transactions, balances, counterparties, or reconciliation. Every number is deterministically computed in <strong>MySQL</strong> and verified against the result before you see it — account numbers and UTRs are always masked.</p>
-            </div>
-          </div>
         </div>
 
         <!-- Query Input Bar -->
