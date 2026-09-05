@@ -358,12 +358,15 @@ async def _execute_query(request: QueryRequest):
                     entity_id=request.entity_id,
                 )
                 response.answer = answer
-                response.grounding_status = "passed" if numbers_grounded else "fallback"
+                response.grounding_status = synth_usage.get("grounding_status", "not_evaluated")
+                response.fallback_reason = synth_usage.get("fallback_reason")
                 response.prompt_tokens += synth_usage.get("prompt_tokens", 0)
                 response.completion_tokens += synth_usage.get("completion_tokens", 0)
             except Exception as e:
                 logger.warning("Synthesis failed: %s", e)
                 response.answer = result.query_result.summary_text()
+                response.grounding_status = "template"
+                response.fallback_reason = "Explanation unavailable; displaying the query result summary."
         elif not result.query_result.success:
             # Valid SQL that still failed to execute even after every
             # auto-repair retry — the frontend's generic fallback text would
@@ -428,6 +431,7 @@ async def _execute_query(request: QueryRequest):
         resolved_entities=resolved_list,
         clarification_needed=result.clarification_needed,
         numbers_grounded=numbers_grounded,
+        grounding_status=response.grounding_status,
     )
     response.confidence = ConfidenceInfo(score=conf.score, level=conf.level, reasons=conf.reasons)
 

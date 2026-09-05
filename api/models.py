@@ -91,6 +91,7 @@ class QueryResponse(BaseModel):
     anomalies: list[AnomalyInfo] = []
     confidence: ConfidenceInfo | None = None
     grounding_status: str = "not_evaluated"
+    fallback_reason: str | None = None
     numbers_grounded: bool = True
     llm_provider: str = ""
     llm_model: str = ""

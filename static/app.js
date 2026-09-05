@@ -16,6 +16,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // the current one — discards stale/out-of-order responses so a slow reply
   // from a previous entity/query can't overwrite what's on screen now.
   let requestEpoch = 0;
+  let requestInFlight = false;
 
   let currentSQL = "";
   let currentResultData = null;
@@ -123,6 +124,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // new one.
   function resetSessionState() {
     requestEpoch++; // discard any in-flight request's response
+    requestInFlight = false;
+    document.getElementById("btn-submit-query").disabled = false;
 
     sessionId = newSessionId();
     document.getElementById("session-badge").textContent = `Session: ${sessionId.substring(0, 12)}`;
@@ -196,7 +199,9 @@ document.addEventListener("DOMContentLoaded", () => {
   queryForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const query = queryInput.value.trim();
-    if (!query) return;
+    if (!query || requestInFlight) return;
+    requestInFlight = true;
+    document.getElementById("btn-submit-query").disabled = true;
 
     const dryRun = dryRunToggle.checked;
 
@@ -214,6 +219,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const botMsgId = appendMessage("Running Text-to-SQL pipeline...", "bot", true);
     answerText.innerHTML = `<div class="loader-spinner"></div>`;
     timingTag.textContent = "Processing...";
+    confidenceBadge.classList.add("hidden");
+    confidenceReasonsCard.classList.add("hidden");
+    groundedTag.classList.add("hidden");
+    answerCard.classList.remove("ungrounded");
+    dataTable.classList.add("hidden");
+    tablePlaceholder.classList.remove("hidden");
+    rowCountBadge.textContent = "Waiting for result";
+    btnExportCsv.disabled = true;
+    btnCopySql.disabled = true;
 
     try {
       const startTime = performance.now();
@@ -245,6 +259,11 @@ document.addEventListener("DOMContentLoaded", () => {
       updateBotMessage(botMsgId, `⚠️ Error: ${err.message}`);
       answerText.textContent = `Error processing query: ${err.message}`;
       timingTag.textContent = "Error";
+    } finally {
+      if (myEpoch === requestEpoch) {
+        requestInFlight = false;
+        document.getElementById("btn-submit-query").disabled = false;
+      }
     }
   });
 
@@ -257,22 +276,17 @@ document.addEventListener("DOMContentLoaded", () => {
     answerText.textContent = data.answer || "No response generated.";
     timingTag.textContent = `${data.total_time_ms ? data.total_time_ms.toFixed(1) : clientDuration} ms`;
 
-    // Grounded/verified indicator — reflects whether the synthesized answer's
-    // numbers were verified against the actual query result, or a fallback
-    // template had to be substituted because they weren't traceable.
-    if (data.grounding_status !== "not_evaluated" && data.query_result && data.query_result.success && data.query_result.row_count > 0) {
-      groundedTag.classList.remove("hidden");
-      answerCard.classList.toggle("ungrounded", !data.numbers_grounded);
-      if (data.numbers_grounded) {
-        groundedTag.className = "grounded-tag ok";
-        groundedTag.textContent = "✓ Numbers verified against result";
-      } else {
-        groundedTag.className = "grounded-tag fallback";
-        groundedTag.textContent = "⚠ Fallback answer (figure unverifiable)";
-      }
-    } else {
-      groundedTag.classList.add("hidden");
-      answerCard.classList.remove("ungrounded");
+    const grounding = data.grounding_status || "not_evaluated";
+    answerCard.classList.remove("ungrounded");
+    groundedTag.classList.toggle("hidden", grounding === "not_evaluated");
+    if (grounding === "passed") {
+      groundedTag.className = "grounded-tag ok";
+      groundedTag.textContent = "✓ Explanation numbers checked";
+      groundedTag.title = "Numbers match returned values; this is not a semantic accuracy guarantee.";
+    } else if (grounding === "fallback" || grounding === "template") {
+      groundedTag.className = "grounded-tag fallback";
+      groundedTag.textContent = "Result summary · Explanation replaced";
+      groundedTag.title = data.fallback_reason || "Showing values directly from the query result.";
     }
 
     // Entity Tags
@@ -309,8 +323,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // Confidence Badge + reasoning behind the score
     if (data.confidence) {
       confidenceBadge.className = `confidence-pill ${data.confidence.level.toLowerCase()}`;
-      confText.textContent = `${data.confidence.score}% ${data.confidence.level} Confidence`;
+      confText.textContent = `${data.confidence.level} query confidence`;
       confidenceBadge.classList.remove("hidden");
+      confidenceBadge.title = "Heuristic query checks; not a probability of correctness. Explanation verification is separate.";
 
       confidenceReasonsList.innerHTML = "";
       (data.confidence.reasons || []).forEach((reason) => {

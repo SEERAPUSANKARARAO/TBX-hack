@@ -25,16 +25,12 @@ def compute_confidence(
     resolved_entities: list[dict] = None,
     clarification_needed: Optional[str] = None,
     numbers_grounded: bool = True,
+    grounding_status: str | None = None,
 ) -> ConfidenceAssessment:
-    """
-    Calculate confidence index for the query pipeline output.
+    """Heuristic query checks, separate from explanation verification.
 
-    `numbers_grounded` is a hard override: it's False only when the
-    synthesized answer stated a figure that couldn't be verified against
-    the actual query result and had to be replaced with a deterministic
-    template (see core.response_synthesizer) — that's a more severe
-    failure than a low fuzzy-match score, so it forces LOW regardless of
-    everything else.
+    A confirmed deterministic replacement does not lower query confidence.
+    The score is an internal index, never a probability of answer correctness.
     """
     if clarification_needed:
         return ConfidenceAssessment(
@@ -50,7 +46,7 @@ def compute_confidence(
             reasons=["SQL validation or execution failed."],
         )
 
-    if not numbers_grounded:
+    if not numbers_grounded and grounding_status not in ("fallback", "template"):
         return ConfidenceAssessment(
             score=30,
             level="LOW",
@@ -59,7 +55,13 @@ def compute_confidence(
         )
 
     score = 100
-    reasons = []
+    reasons = ["Heuristic query checks only; not a probability of correctness."]
+    if grounding_status in ("fallback", "template"):
+        reasons.append("Explanation replaced with a deterministic result summary. This does not invalidate the query result.")
+    elif grounding_status == "passed":
+        reasons.append("Explanation numbers matched returned values; meaning and filters still require review.")
+    else:
+        reasons.append("Explanation verification was not performed.")
 
     # Retry penalty
     if retries > 0:
@@ -81,7 +83,7 @@ def compute_confidence(
 
     # Row count sanity
     if row_count == 0:
-        score = max(score - 20, 50)
+        score -= 20
         reasons.append("Query returned 0 rows matching criteria.")
     else:
         reasons.append(f"Successfully retrieved {row_count} record(s).")
