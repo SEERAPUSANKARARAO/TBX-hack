@@ -12,6 +12,7 @@ check, not just an instruction.
 """
 import re
 import logging
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import httpx
 
@@ -21,78 +22,82 @@ from core.api_key_pool import ApiKeyPool
 logger = logging.getLogger(__name__)
 
 
+class NumericEvidence(set):
+    """Exact values grouped by unit so counts/amounts cannot justify percentages."""
+    def __init__(self):
+        super().__init__()
+        self.percentages = set()
+        self.non_percentages = set()
+
+
 def _collect_allowed_numbers(query_result: dict) -> set[str]:
-    """
-    Every numeric value that legitimately appears in the query result,
-    normalized to a small set of comparable string forms. Any number the
-    LLM states must match one of these — it's not allowed to compute or
-    invent a new one (a total, a delta, a percentage, anything).
-    """
-    allowed = set()
-
-    def add(value):
+    """Keep exact decimal values; do not widen acceptance by integer rounding."""
+    allowed = NumericEvidence()
+    def add(value, column=""):
         try:
-            f = float(value)
-        except (TypeError, ValueError):
-            return
-        allowed.add(f"{f:.2f}")
-        allowed.add(f"{f:.0f}")
-        allowed.add(f"{round(f):,}")
-        allowed.add(f"{f:,.2f}")
-
+            number = Decimal(str(value))
+            if number.is_finite():
+                allowed.add(str(number))
+                target = allowed.percentages if re.search(r"percent|pct", column, re.I) else allowed.non_percentages
+                target.add(str(number))
+        except (InvalidOperation, ValueError, TypeError):
+            pass
+    add(query_result.get("row_count", 0))
     rows = query_result.get("rows", [])
     add(len(rows))
-    add(query_result.get("row_count", 0))
     for row in rows:
-        values = row.values() if isinstance(row, dict) else row
-        for v in values:
-            add(v)
-
+        pairs = row.items() if isinstance(row, dict) else zip(query_result.get("columns", []), row)
+        for column, value in pairs:
+            if re.search(r"(^|_)(id|number|reference|utr)(_|$)", column, re.I):
+                continue
+            add(value, column)
     return allowed
 
 
+_NUMBER = r"[+−-]?\d[\d,]*(?:\.\d+)?"
+
 def _extract_numbers(text: str) -> list[str]:
-    """
-    Numeric tokens the LLM's answer states (currency-formatted or bare).
-    The decimal group requires at least one digit after the '.' — otherwise
-    a number at the end of a sentence ("...in 2026.") greedily swallows the
-    full stop into the token ("2026."), which then fails an exact 4-digit
-    year fullmatch downstream for no reason connected to grounding at all.
-    """
-    return re.findall(r'-?\d[\d,]*(?:\.\d+)?', text)
+    return re.findall(_NUMBER, text)
 
 
 def _normalize(token: str) -> str:
-    return token.replace(",", "").strip()
+    return token.replace(",", "").replace("−", "-").strip()
 
 
 def _verify_numbers_grounded(answer: str, allowed_numbers: set[str]) -> bool:
-    """
-    True if every number-looking token in `answer` matches a value that
-    actually appeared in the query result (allowing for $/comma/rounding
-    formatting differences). A year (e.g. "2026") is not treated as a
-    groundable figure.
+    """Numeric consistency only, not semantic accuracy. Fail closed on ambiguity.
 
-    Deliberately does NOT exempt small integers in general ("top 5 results")
-    — that used to be a blanket "abs(value) < 32" skip, but it let through
-    exactly the most dangerous hallucination case: a small invented
-    percentage or delta ("15% higher than last month") is also a small
-    integer. Legitimate structural counts (row_count, len(rows)) are already
-    included in `allowed_numbers` by _collect_allowed_numbers, so they don't
-    need a separate exemption here — only genuinely invented figures do.
+    Decimal rounding is checked at the displayed precision (at least two
+    decimal places for non-integers). Explicit decrease/increase wording
+    directly before an unsigned magnitude supplies its direction.
     """
-    for raw in _extract_numbers(answer):
-        token = _normalize(raw)
-        if not token or token in (".", "-"):
+    if not answer.strip() or re.fullmatch(r"(?:processing|loading|thinking)[.\s…]*", answer.strip(), re.I):
+        return False
+    allowed = [Decimal(_normalize(n)) for n in allowed_numbers]
+    for match in re.finditer(_NUMBER, answer):
+        token = _normalize(match.group())
+        value = Decimal(token)
+        prefix = answer[max(0, match.start()-60):match.start()]
+        direction = re.search(r"\b(decreased?|declined?|fell|dropped?|reduced?|increased?|rose|grew)\s+by\s*(?:[₹$]\s*)?$", prefix, re.I)
+        if direction:
+            # Signed magnitudes after 'by' are ambiguous: use the safe template.
+            if token.startswith(("-", "+")):
+                return False
+            negative = direction.group(1).lower().startswith(('decreas', 'declin', 'fell', 'drop', 'reduc'))
+            value = -value if negative else value
+        # A year is context only with explicit temporal wording, never a blanket exemption.
+        if (not direction and re.fullmatch(r"\d{4}", token) and 1900 <= value <= 2100
+                and re.search(r"(?:\bin|\bfor|January|February|March|April|May|June|July|August|September|October|November|December)\s+$", prefix, re.I)):
             continue
-        try:
-            value = float(token)
-        except ValueError:
-            continue
-        if re.fullmatch(r'\d{4}', token) and 1900 <= value <= 2100:
-            continue
-        candidates = {f"{value:.2f}", f"{value:.0f}", token}
-        if not candidates & allowed_numbers:
+        candidates = allowed
+        if isinstance(allowed_numbers, NumericEvidence):
+            suffix = answer[match.end():]
+            is_percent = bool(re.match(r"\s*(?:%|percent\b|percentage points\b)", suffix, re.I))
+            pool = allowed_numbers.percentages if is_percent else allowed_numbers.non_percentages
+            candidates = [Decimal(n) for n in pool]
+        places = len(token.split('.')[1]) if '.' in token else 0
+        quantum = Decimal(1).scaleb(-max(2, places))
+        if not any(value == source or (places >= 2 and value == source.quantize(quantum, rounding=ROUND_HALF_UP)) for source in candidates):
             return False
     return True
 
@@ -147,7 +152,7 @@ def synthesize_response(
         to the query result and a deterministic template was substituted
         instead. usage is {"prompt_tokens", "completion_tokens", "cost"}.
     """
-    empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0}
+    empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "grounding_status": "not_evaluated"}
 
     if not query_result.get("success"):
         return f"I encountered an error running the query: {query_result.get('error', 'Unknown error')}", True, empty_usage
@@ -178,9 +183,10 @@ def synthesize_response(
 
 RULES:
 1. Be conversational but precise. Use ONLY exact numbers that appear in the results below — do not
-   compute, round, sum, or derive any new figure (no percentages, deltas, or trends not already
+   compute, sum, or derive any new figure (no percentages, deltas, or trends not already
    present as a column).
-2. Format currency values with commas (e.g., 12,345.67). This is Indian bank data — do not add a $ sign.
+2. You may round existing decimal values to two decimal places. Preserve signs.
+   Format currency values with commas (e.g., 12,345.67). This is Indian bank data — do not add a $ sign.
 3. If there are multiple rows, summarize the key findings without inventing new numbers.
 4. Keep your answer to 2-4 sentences unless more detail is genuinely needed.
 5. Do NOT mention SQL or database internals. Speak as if you looked up the data directly.
@@ -207,17 +213,18 @@ QUERY RESULTS ({row_count} rows):
         answer = re.sub(r'\$(?=\d)', '', response.strip())
     except Exception as e:
         logger.warning("LLM synthesis failed, using template: %s", e)
-        return _template_response(user_query, columns, rows, row_count), True, empty_usage
+        return _template_response(user_query, columns, rows, row_count), True, {**empty_usage, "grounding_status": "template", "fallback_reason": "Explanation service unavailable; displaying values directly from the result."}
 
     allowed_numbers = _collect_allowed_numbers(query_result)
     if _verify_numbers_grounded(answer, allowed_numbers):
-        return answer, True, usage
+        return answer, True, {**usage, "grounding_status": "passed"}
 
-    logger.warning(
-        "Synthesized answer stated a number not present in the query result — "
-        "falling back to a deterministic template. answer=%r", answer
-    )
-    return _template_response(user_query, columns, rows, row_count), False, usage
+    logger.warning("Explanation numeric verification failed; using result template")
+    return _template_response(user_query, columns, rows, row_count), False, {
+        **usage, "grounding_status": "fallback",
+        "fallback_reason": "Generated explanation did not pass numeric verification; displaying values directly from the result."
+    }
+
 
 
 def _format_results_for_llm(columns: list, rows: list, total_count: int) -> str:
@@ -243,10 +250,10 @@ def _format_results_for_llm(columns: list, rows: list, total_count: int) -> str:
 
 def _template_response(user_query: str, columns: list, rows: list, row_count: int) -> str:
     """Deterministic fallback: only ever restates values already in the result."""
-    if row_count == 1 and len(columns) <= 3:
+    if row_count == 1 and rows:
         row = rows[0]
         if isinstance(row, dict):
-            parts = [f"{k}: {v}" for k, v in row.items()]
+            parts = [f"{k.replace('_', ' ')}: {v}" for k, v in row.items()]
         else:
             parts = [f"{columns[i]}: {row[i]}" for i in range(len(columns))]
         return f"Based on the data: {', '.join(parts)}."

@@ -16,6 +16,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // the current one — discards stale/out-of-order responses so a slow reply
   // from a previous entity/query can't overwrite what's on screen now.
   let requestEpoch = 0;
+  let requestInFlight = false;
 
   let currentSQL = "";
   let currentResultData = null;
@@ -32,71 +33,6 @@ document.addEventListener("DOMContentLoaded", () => {
     </div>
   `;
   const ANSWER_PLACEHOLDER = "Submit a query on the left to inspect real-time deterministic financial insights.";
-
-  // The original static chip set — used whenever no specific customer is
-  // selected ("All customers (unscoped)"), and restored on customer switch
-  // before entity-specific chips (if any) are fetched.
-  const DEFAULT_PROMPT_CHIPS = [
-    { label: "Amazon Spend Q", query: "How much did we send to Amazon Retail India this quarter?" },
-    { label: "Top 5 Counterparties", query: "Who are our top 5 counterparties by total spend?" },
-    { label: "Unreconciled > 50k", query: "Show unreconciled transactions over 50000." },
-    { label: "HDFC Balance", query: "What is our available balance at HDFC Bank?" },
-    { label: "Credit vs Debit", query: "Break down credits and debits by bank this year." },
-    { label: "Largest Selection Payment", query: "What's the largest payment we've made to Selection Electronics?" },
-    { label: "Unknown Counterparty (test)", query: "What is our spend on Quantum Retail Ltd?" },
-  ];
-
-  // Full /api/entities payload, kept around so a customer switch can build
-  // entity-specific prompt chips (bank_names, etc.) without re-fetching.
-  let entitiesData = [];
-
-  function renderPromptChips(chips) {
-    chipsScroll.innerHTML = "";
-    chips.forEach(({ label, query }) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "prompt-chip";
-      btn.dataset.query = query;
-      btn.textContent = label;
-      btn.addEventListener("click", () => {
-        queryInput.value = query;
-        queryForm.dispatchEvent(new Event("submit"));
-      });
-      chipsScroll.appendChild(btn);
-    });
-  }
-
-  // Rebuild the chip row from this entity's real data — falls back to the
-  // generic default set when unscoped or when nothing entity-specific comes
-  // back (e.g. a brand-new customer with no counterparty history yet).
-  async function refreshPromptChipsForEntity(entityId) {
-    if (!entityId) {
-      renderPromptChips(DEFAULT_PROMPT_CHIPS);
-      return;
-    }
-
-    const chips = [
-      { label: "Unreconciled > 50k", query: "Show unreconciled transactions over 50000." },
-    ];
-
-    const entity = entitiesData.find((e) => e.entity_id === entityId);
-    if (entity && entity.bank_names) {
-      const firstBank = entity.bank_names.split(",")[0].trim();
-      chips.push({ label: `${firstBank} Balance`, query: `What is our available balance at ${firstBank}?` });
-    }
-
-    try {
-      const resp = await fetch(`/api/counterparties?entity_id=${encodeURIComponent(entityId)}`);
-      const data = await resp.json();
-      (data.counterparties || []).slice(0, 2).forEach((c) => {
-        chips.push({ label: `${c.name} Spend`, query: `How much did we send to ${c.name} this quarter?` });
-      });
-    } catch (e) {
-      // Non-fatal — falls back to whatever chips were already built above.
-    }
-
-    renderPromptChips(chips.length > 1 ? chips : DEFAULT_PROMPT_CHIPS);
-  }
 
   // DOM Elements
   const queryForm = document.getElementById("query-form");
@@ -123,12 +59,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const metaTables = document.getElementById("meta-tables");
   const metaLatency = document.getElementById("meta-latency");
   const metaLlm = document.getElementById("meta-llm");
+  const metaModel = document.getElementById("meta-model");
+  const providerName = value => ({openrouter:"OpenRouter",ollama:"Ollama",openai:"OpenAI",groq:"Groq"}[value] || value || "Unavailable");
   const metaRetries = document.getElementById("meta-retries");
   const metaTokens = document.getElementById("meta-tokens");
   const metaColumns = document.getElementById("meta-columns");
   const metaRecords = document.getElementById("meta-records");
   const lineageSummaryEl = document.getElementById("lineage-summary");
-  const chipsScroll = document.getElementById("chips-scroll");
   const confidenceReasonsCard = document.getElementById("confidence-reasons-card");
   const confidenceReasonsList = document.getElementById("confidence-reasons-list");
   const btnConfWhy = document.getElementById("btn-conf-why");
@@ -179,7 +116,6 @@ document.addEventListener("DOMContentLoaded", () => {
     lockPasswordInput.value = "";
     lockScreen.classList.add("hidden");
     queryInput.focus();
-    refreshPromptChipsForEntity(currentEntityId);
   }
 
   // Reset all per-session UI/state back to its fresh-load defaults and mint
@@ -188,6 +124,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // new one.
   function resetSessionState() {
     requestEpoch++; // discard any in-flight request's response
+    requestInFlight = false;
+    document.getElementById("btn-submit-query").disabled = false;
 
     sessionId = newSessionId();
     document.getElementById("session-badge").textContent = `Session: ${sessionId.substring(0, 12)}`;
@@ -218,7 +156,8 @@ document.addEventListener("DOMContentLoaded", () => {
     lineageSummaryEl.classList.add("hidden");
     metaTables.textContent = "—";
     metaLatency.textContent = "0 ms";
-    metaLlm.textContent = "Ollama";
+    metaLlm.textContent = "Not requested";
+    metaModel.textContent = "Not requested";
     metaRetries.textContent = "0";
     metaTokens.textContent = "0 / 0";
     metaColumns.textContent = "—";
@@ -234,7 +173,6 @@ document.addEventListener("DOMContentLoaded", () => {
     btnExportCsv.disabled = true;
     btnCopySql.disabled = true;
 
-    renderPromptChips(DEFAULT_PROMPT_CHIPS);
   }
 
   btnSwitchCustomer.addEventListener("click", () => {
@@ -257,19 +195,13 @@ document.addEventListener("DOMContentLoaded", () => {
     confidenceReasonsCard.classList.toggle("hidden");
   });
 
-  // Prompt Chips
-  document.querySelectorAll(".prompt-chip").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      queryInput.value = chip.dataset.query;
-      queryForm.dispatchEvent(new Event("submit"));
-    });
-  });
-
   // Query Form Submit
   queryForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const query = queryInput.value.trim();
-    if (!query) return;
+    if (!query || requestInFlight) return;
+    requestInFlight = true;
+    document.getElementById("btn-submit-query").disabled = true;
 
     const dryRun = dryRunToggle.checked;
 
@@ -287,6 +219,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const botMsgId = appendMessage("Running Text-to-SQL pipeline...", "bot", true);
     answerText.innerHTML = `<div class="loader-spinner"></div>`;
     timingTag.textContent = "Processing...";
+    confidenceBadge.classList.add("hidden");
+    confidenceReasonsCard.classList.add("hidden");
+    groundedTag.classList.add("hidden");
+    answerCard.classList.remove("ungrounded");
+    dataTable.classList.add("hidden");
+    tablePlaceholder.classList.remove("hidden");
+    rowCountBadge.textContent = "Waiting for result";
+    btnExportCsv.disabled = true;
+    btnCopySql.disabled = true;
 
     try {
       const startTime = performance.now();
@@ -318,6 +259,11 @@ document.addEventListener("DOMContentLoaded", () => {
       updateBotMessage(botMsgId, `⚠️ Error: ${err.message}`);
       answerText.textContent = `Error processing query: ${err.message}`;
       timingTag.textContent = "Error";
+    } finally {
+      if (myEpoch === requestEpoch) {
+        requestInFlight = false;
+        document.getElementById("btn-submit-query").disabled = false;
+      }
     }
   });
 
@@ -330,22 +276,17 @@ document.addEventListener("DOMContentLoaded", () => {
     answerText.textContent = data.answer || "No response generated.";
     timingTag.textContent = `${data.total_time_ms ? data.total_time_ms.toFixed(1) : clientDuration} ms`;
 
-    // Grounded/verified indicator — reflects whether the synthesized answer's
-    // numbers were verified against the actual query result, or a fallback
-    // template had to be substituted because they weren't traceable.
-    if (data.grounding_status !== "not_evaluated" && data.query_result && data.query_result.success && data.query_result.row_count > 0) {
-      groundedTag.classList.remove("hidden");
-      answerCard.classList.toggle("ungrounded", !data.numbers_grounded);
-      if (data.numbers_grounded) {
-        groundedTag.className = "grounded-tag ok";
-        groundedTag.textContent = "✓ Numbers verified against result";
-      } else {
-        groundedTag.className = "grounded-tag fallback";
-        groundedTag.textContent = "⚠ Fallback answer (figure unverifiable)";
-      }
-    } else {
-      groundedTag.classList.add("hidden");
-      answerCard.classList.remove("ungrounded");
+    const grounding = data.grounding_status || "not_evaluated";
+    answerCard.classList.remove("ungrounded");
+    groundedTag.classList.toggle("hidden", grounding === "not_evaluated");
+    if (grounding === "passed") {
+      groundedTag.className = "grounded-tag ok";
+      groundedTag.textContent = "✓ Explanation numbers checked";
+      groundedTag.title = "Numbers match returned values; this is not a semantic accuracy guarantee.";
+    } else if (grounding === "fallback" || grounding === "template") {
+      groundedTag.className = "grounded-tag fallback";
+      groundedTag.textContent = "Result summary · Explanation replaced";
+      groundedTag.title = data.fallback_reason || "Showing values directly from the query result.";
     }
 
     // Entity Tags
@@ -382,8 +323,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // Confidence Badge + reasoning behind the score
     if (data.confidence) {
       confidenceBadge.className = `confidence-pill ${data.confidence.level.toLowerCase()}`;
-      confText.textContent = `${data.confidence.score}% ${data.confidence.level} Confidence`;
+      confText.textContent = `${data.confidence.level} query confidence`;
       confidenceBadge.classList.remove("hidden");
+      confidenceBadge.title = "Heuristic query checks; not a probability of correctness. Explanation verification is separate.";
 
       confidenceReasonsList.innerHTML = "";
       (data.confidence.reasons || []).forEach((reason) => {
@@ -442,7 +384,9 @@ document.addEventListener("DOMContentLoaded", () => {
       metaColumns.textContent = "—";
       metaRecords.textContent = "0";
     }
-    metaLlm.textContent = data.llm_model || data.llm_provider || "Ollama";
+    const noModel = data.direct_response_kind || data.llm_provider === "dry_run" || (!data.llm_provider && !data.llm_model);
+    metaLlm.textContent = noModel ? "No model call" : providerName(data.llm_provider);
+    metaModel.textContent = noModel ? "Not used" : (data.llm_model || "Unavailable");
     metaRetries.textContent = `${data.retries || 0}`;
     metaTokens.textContent = `${data.prompt_tokens || 0} / ${data.completion_tokens || 0}`;
 
@@ -668,9 +612,11 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const resp = await fetch("/api/health");
       const data = await resp.json();
+      activeModelText.textContent = `${providerName(data.llm_provider)} · ${data.llm_model || "Model unavailable"}`;
+      activeModelText.title = "Configured provider and model; request details appear in the audit panel.";
       if (data.status === "ok") {
         dbStatusText.textContent = `MySQL: ${data.total_rows} Rows (${data.tables} Tables)`;
-        activeModelText.textContent = data.llm_model || data.llm_provider;
+
       }
     } catch (e) {
       dbStatusText.textContent = "DB Status: Offline";
@@ -684,8 +630,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const resp = await fetch("/api/entities");
       const data = await resp.json();
-      entitiesData = data.entities || [];
-      entitiesData.forEach((e) => {
+      (data.entities || []).forEach((e) => {
         const opt = document.createElement("option");
         opt.value = e.entity_id;
         const shortId = e.entity_id.substring(0, 8);

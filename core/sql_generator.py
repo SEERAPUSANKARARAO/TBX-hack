@@ -232,11 +232,11 @@ class SQLGenerator:
             return result
 
         # ── Step 3: Call LLM ──
+        result.llm_provider = self.llm_provider
+        result.llm_model = self.llm_model
         try:
             llm_response = self._call_llm(messages)
             result.raw_llm_response = llm_response
-            result.llm_provider = self.llm_provider
-            result.llm_model = self.llm_model
             result.prompt_tokens += self.last_usage.get("prompt_tokens", 0)
             result.completion_tokens += self.last_usage.get("completion_tokens", 0)
             result.cost_usd += self.last_usage.get("cost", 0.0)

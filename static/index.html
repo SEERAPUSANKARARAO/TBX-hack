@@ -118,21 +118,6 @@
           </div>
         </div>
 
-        <!-- Quick Prompt Chips — directly above the input bar, where you're about to type -->
-        <div class="prompt-chips-container">
-          <span class="chips-title">Suggested Inquiries:</span>
-          <div class="chips-scroll" id="chips-scroll">
-            <button class="prompt-chip" data-query="How much did we send to Amazon Retail India this quarter?">Amazon Spend Q</button>
-            <button class="prompt-chip" data-query="Who are our top 5 counterparties by total spend?">Top 5 Counterparties</button>
-            <button class="prompt-chip" data-query="Show unreconciled transactions over 50000.">Unreconciled &gt; 50k</button>
-            <button class="prompt-chip" data-query="What is our available balance at HDFC Bank?">HDFC Balance</button>
-            <button class="prompt-chip" data-query="Break down credits and debits by bank this year.">Credit vs Debit</button>
-            <button class="prompt-chip" data-query="What's the largest payment we've made to Selection Electronics?">Largest Selection Payment</button>
-            <button class="prompt-chip" data-query="What is our spend on Quantum Retail Ltd?">Unknown Counterparty (test)</button>
-          </div>
-          <span class="chips-hint">💡 After any answer, try a follow-up like "and last month?" — it reuses the same filters.</span>
-        </div>
-
         <!-- Query Input Bar -->
         <div class="chat-input-container">
           <form id="query-form" class="query-form">
@@ -184,7 +169,7 @@
 
         <!-- Confidence Reasoning — hidden until "?" is clicked -->
         <div id="confidence-reasons-card" class="confidence-reasons-card hidden">
-          <span class="confidence-reasons-title">Why this confidence score:</span>
+          <span class="confidence-reasons-title">Query confidence checks (heuristic):</span>
           <ul id="confidence-reasons-list"></ul>
         </div>
 
@@ -262,7 +247,11 @@
                 </div>
                 <div class="meta-item">
                   <span class="meta-label">LLM Provider</span>
-                  <span id="meta-llm" class="meta-val">Ollama</span>
+                  <span id="meta-llm" class="meta-val">Not requested</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Requested Model</span>
+                  <span id="meta-model" class="meta-val">Not requested</span>
                 </div>
                 <div class="meta-item">
                   <span class="meta-label">Auto-Repair Retries</span>
