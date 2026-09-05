@@ -20,7 +20,7 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
 PROJECT_ROOT = Path(__file__).parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config import APP_HOST, APP_PORT
+from config import APP_HOST, APP_PORT, DUCKDB_PATH
 
 
 def main():
@@ -29,6 +29,11 @@ def main():
     parser.add_argument("--port", type=int, default=APP_PORT, help="Bind port")
     parser.add_argument("--reload", action="store_true", help="Auto-reload on changes")
     args = parser.parse_args()
+
+    if not Path(DUCKDB_PATH).exists():
+        print(f"Database not found at {DUCKDB_PATH} — initializing it now...")
+        from db.init_db import init_database
+        init_database()
 
     import uvicorn
 

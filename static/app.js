@@ -17,6 +17,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const chatStream = document.getElementById("chat-stream");
   const answerCard = document.getElementById("answer-card");
   const answerText = document.getElementById("answer-text");
+  const groundedTag = document.getElementById("grounded-tag");
   const timingTag = document.getElementById("timing-tag");
   const entityTagsRow = document.getElementById("entity-tags-row");
   const confidenceBadge = document.getElementById("confidence-badge");
@@ -35,6 +36,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const metaLatency = document.getElementById("meta-latency");
   const metaLlm = document.getElementById("meta-llm");
   const metaRetries = document.getElementById("meta-retries");
+  const metaTokens = document.getElementById("meta-tokens");
   const btnExportCsv = document.getElementById("btn-export-csv");
   const btnCopySql = document.getElementById("btn-copy-sql");
   const btnClearChat = document.getElementById("btn-clear-chat");
@@ -111,15 +113,41 @@ document.addEventListener("DOMContentLoaded", () => {
     answerText.textContent = data.answer || "No response generated.";
     timingTag.textContent = `${data.total_time_ms ? data.total_time_ms.toFixed(1) : clientDuration} ms`;
 
+    // Grounded/verified indicator — reflects whether the synthesized answer's
+    // numbers were verified against the actual query result, or a fallback
+    // template had to be substituted because they weren't traceable.
+    if (data.query_result && data.query_result.success && data.query_result.row_count > 0) {
+      groundedTag.classList.remove("hidden");
+      answerCard.classList.toggle("ungrounded", !data.numbers_grounded);
+      if (data.numbers_grounded) {
+        groundedTag.className = "grounded-tag ok";
+        groundedTag.textContent = "✓ Numbers verified against result";
+      } else {
+        groundedTag.className = "grounded-tag fallback";
+        groundedTag.textContent = "⚠ Fallback answer (figure unverifiable)";
+      }
+    } else {
+      groundedTag.classList.add("hidden");
+      answerCard.classList.remove("ungrounded");
+    }
+
     // Entity Tags
     entityTagsRow.innerHTML = "";
     if (data.resolved_entities) {
       let hasEntities = false;
-      if (data.resolved_entities.vendor) {
-        const v = data.resolved_entities.vendor;
+      if (data.resolved_entities.counterparty) {
+        const v = data.resolved_entities.counterparty;
         const tag = document.createElement("span");
         tag.className = "entity-tag";
-        tag.textContent = `Vendor: ${v.name} (${Math.round(v.match_score || 100)}% match)`;
+        tag.textContent = `Counterparty: ${v.name} (${Math.round(v.match_score || 100)}% match)`;
+        entityTagsRow.appendChild(tag);
+        hasEntities = true;
+      }
+      if (data.resolved_entities.bank) {
+        const b = data.resolved_entities.bank;
+        const tag = document.createElement("span");
+        tag.className = "entity-tag";
+        tag.textContent = `Bank: ${b.name} (${b.code})`;
         entityTagsRow.appendChild(tag);
         hasEntities = true;
       }
@@ -171,6 +199,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     metaLlm.textContent = data.llm_model || data.llm_provider || "Ollama";
     metaRetries.textContent = `${data.retries || 0}`;
+    metaTokens.textContent = `${data.prompt_tokens || 0} / ${data.completion_tokens || 0}`;
 
     // Enable/Disable Action Buttons
     btnExportCsv.disabled = !data.extracted_sql || !data.query_result || !data.query_result.success;
@@ -210,8 +239,9 @@ document.addEventListener("DOMContentLoaded", () => {
         const td = document.createElement("td");
         let val = typeof row === "object" && !Array.isArray(row) ? row[col] : row;
         if (typeof val === "number") {
-          if (col.toLowerCase().includes("amount") || col.toLowerCase().includes("spend") || col.toLowerCase().includes("total")) {
-            val = "$" + val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const c = col.toLowerCase();
+          if (c.includes("amount") || c.includes("spend") || c.includes("total") || c.includes("balance")) {
+            val = val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           } else {
             val = val.toLocaleString();
           }

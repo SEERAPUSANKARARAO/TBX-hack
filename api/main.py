@@ -5,18 +5,18 @@ REST API exposing the Text-to-SQL pipeline with endpoints for
 querying, schema inspection, CSV export, and session management.
 
 Endpoints:
-    POST /api/query     — Submit a natural language question
-    GET  /api/health    — Health check with DB stats
-    GET  /api/schema    — Database schema information
-    GET  /api/history   — Conversation history for a session
-    POST /api/export    — Export query results as CSV
-    DELETE /api/history — Clear conversation history
+    POST /api/query          — Submit a natural language question
+    GET  /api/health         — Health check with DB stats
+    GET  /api/schema         — Database schema information
+    GET  /api/history        — Conversation history for a session
+    POST /api/export         — Export query results as CSV
+    DELETE /api/history      — Clear conversation history
+    GET  /api/counterparties — List extracted counterparty names
 """
 import sys
 import io
 import csv
 import logging
-from datetime import date
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -25,7 +25,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-# Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -47,15 +46,14 @@ from core.query_engine import QueryEngine
 from core.response_synthesizer import synthesize_response
 from core.anomaly_detector import AnomalyDetector
 from core.confidence_scorer import compute_confidence
+from core.data_bounds import get_reference_date
 
 logger = logging.getLogger(__name__)
 
-# ── Session storage (in-memory for hackathon) ──
 _sessions: dict[str, SQLGenerator] = {}
 
 
 def _get_llm_model() -> str:
-    """Get the active LLM model name based on provider."""
     return {
         "openrouter": OPENROUTER_MODEL,
         "ollama": OLLAMA_MODEL,
@@ -86,34 +84,29 @@ def _get_generator(session_id: str = "default") -> SQLGenerator:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application startup/shutdown lifecycle."""
-    # Startup
     logger.info("Starting Financial AI Chatbot API...")
     logger.info("Database: %s", DUCKDB_PATH)
     logger.info("LLM Provider: %s, Model: %s", LLM_PROVIDER, _get_llm_model())
 
-    # Verify database exists
     if not Path(DUCKDB_PATH).exists():
         logger.error("Database not found: %s. Run 'python db/init_db.py' first.", DUCKDB_PATH)
 
     yield
 
-    # Shutdown
     _sessions.clear()
     logger.info("API shutdown complete.")
 
 
-# ── FastAPI App ──
 app = FastAPI(
     title="Financial AI Chatbot",
-    description="Deterministic Text-to-SQL engine for financial data analysis. "
+    description="Deterministic Text-to-SQL engine for bank transaction data. "
                 "Ask questions in plain English and get precise, auditable answers "
-                "backed by SQL execution against DuckDB.",
-    version="1.0.0",
+                "backed by SQL execution against DuckDB. Account numbers and UTRs "
+                "are masked by default — never returned raw.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-# CORS — allow frontend to connect
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -123,41 +116,59 @@ app.add_middleware(
 )
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ENDPOINTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _build_resolved_entities_response(resolved_entities: dict) -> dict:
+    """Nested shape the frontend renders (see static/app.js)."""
+    out: dict = {"counterparty": None, "bank": None, "dates": None, "unresolved_counterparty": None}
+    if resolved_entities.get("counterparty_name"):
+        out["counterparty"] = {
+            "name": resolved_entities["counterparty_name"],
+            "match_score": resolved_entities.get("counterparty_match_score", 100),
+        }
+    if resolved_entities.get("bank_code"):
+        out["bank"] = {
+            "code": resolved_entities["bank_code"],
+            "name": resolved_entities.get("bank_name"),
+        }
+    if resolved_entities.get("start_date"):
+        out["dates"] = {
+            "start_date": resolved_entities["start_date"],
+            "end_date": resolved_entities.get("end_date"),
+        }
+    if resolved_entities.get("unresolved_counterparty"):
+        out["unresolved_counterparty"] = resolved_entities["unresolved_counterparty"]
+    return out
 
 
 @app.post("/api/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
-    Submit a natural language question about financial data.
+    Submit a natural language question about bank transaction data.
 
     The pipeline will:
-    1. Resolve entities (vendors, dates) from your query
+    1. Resolve entities (counterparty, dates) from your query
     2. Generate SQL using the LLM
-    3. Validate SQL (read-only, correct tables)
+    3. Validate SQL (read-only, correct tables, no raw PII columns)
     4. Execute against DuckDB
-    5. Synthesize a natural language answer
+    5. Synthesize a natural language answer, verified against the result
 
     Multi-turn: Use the same session_id for follow-up questions.
     """
     generator = _get_generator(request.session_id)
+    reference_date = get_reference_date(DUCKDB_PATH)
 
     try:
         result = generator.generate(
             user_query=request.query,
-            reference_date=date.today(),
+            reference_date=reference_date,
             dry_run=request.dry_run,
         )
     except Exception as e:
         logger.exception("Pipeline error")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
 
-    # Build response
     response = QueryResponse(
         user_query=result.user_query,
-        resolved_entities=result.resolved_entities,
+        resolved_entities=_build_resolved_entities_response(result.resolved_entities),
         extracted_sql=result.extracted_sql,
         sql_valid=result.sql_valid,
         validation_error=result.validation_error,
@@ -166,10 +177,13 @@ async def query(request: QueryRequest):
         llm_model=result.llm_model,
         total_time_ms=result.total_time_ms,
         retries=result.retries,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
         error=result.error,
     )
 
-    # Add query result if available
+    numbers_grounded = True
+
     if result.query_result:
         response.query_result = QueryResultData(
             success=result.query_result.success,
@@ -182,7 +196,6 @@ async def query(request: QueryRequest):
             tables_touched=result.query_result.tables_touched,
         )
 
-        # Statistical Anomaly Detection
         if result.query_result.success and not request.dry_run:
             try:
                 detector = AnomalyDetector(DUCKDB_PATH)
@@ -194,7 +207,7 @@ async def query(request: QueryRequest):
                 response.anomalies = [
                     AnomalyInfo(
                         transaction_id=a.transaction_id,
-                        vendor_name=a.vendor_name,
+                        counterparty_name=a.counterparty_name,
                         amount=a.amount,
                         historical_mean=a.historical_mean,
                         historical_std=a.historical_std,
@@ -207,10 +220,9 @@ async def query(request: QueryRequest):
             except Exception as e:
                 logger.warning("Anomaly detection failed: %s", e)
 
-        # Synthesize natural language answer
         if result.query_result.success and not request.dry_run:
             try:
-                answer = synthesize_response(
+                answer, numbers_grounded, synth_usage = synthesize_response(
                     user_query=request.query,
                     sql=result.extracted_sql,
                     query_result=result.query_result.to_dict(),
@@ -225,27 +237,27 @@ async def query(request: QueryRequest):
                     max_tokens=512,
                 )
                 response.answer = answer
+                response.prompt_tokens += synth_usage.get("prompt_tokens", 0)
+                response.completion_tokens += synth_usage.get("completion_tokens", 0)
             except Exception as e:
                 logger.warning("Synthesis failed: %s", e)
-                # Fall back to summary
                 response.answer = result.query_result.summary_text()
     elif result.clarification_needed:
         response.answer = result.clarification_needed
 
-    # Confidence assessment
+    response.numbers_grounded = numbers_grounded
+
+    # ── Confidence assessment ──
     exec_ok = bool(result.query_result and result.query_result.success)
     r_count = result.query_result.row_count if result.query_result else 0
     resolved_list = []
-    if result.resolved_entities:
-        if "vendor" in result.resolved_entities:
-            v = result.resolved_entities["vendor"]
-            if isinstance(v, dict):
-                resolved_list.append({
-                    "type": "vendor",
-                    "raw": v.get("raw"),
-                    "canonical": v.get("name"),
-                    "similarity": v.get("match_score", 100),
-                })
+    if result.resolved_entities.get("counterparty_name"):
+        resolved_list.append({
+            "type": "counterparty",
+            "raw": result.resolved_entities["counterparty_name"],
+            "canonical": result.resolved_entities["counterparty_name"],
+            "similarity": result.resolved_entities.get("counterparty_match_score", 100),
+        })
 
     conf = compute_confidence(
         sql_valid=result.sql_valid,
@@ -254,25 +266,19 @@ async def query(request: QueryRequest):
         retries=result.retries,
         resolved_entities=resolved_list,
         clarification_needed=result.clarification_needed,
+        numbers_grounded=numbers_grounded,
     )
-    response.confidence = ConfidenceInfo(
-        score=conf.score,
-        level=conf.level,
-        reasons=conf.reasons,
-    )
+    response.confidence = ConfidenceInfo(score=conf.score, level=conf.level, reasons=conf.reasons)
 
     return response
 
 
 @app.get("/api/health", response_model=HealthResponse)
 async def health():
-    """
-    Health check — verifies database connectivity and returns stats.
-    """
+    """Health check — verifies database connectivity and returns stats."""
     try:
         engine = QueryEngine(DUCKDB_PATH)
 
-        # Get table count and total rows
         table_result = engine.execute("""
             SELECT COUNT(*) AS cnt FROM information_schema.tables
             WHERE table_schema = 'main' AND table_type = 'BASE TABLE'
@@ -281,11 +287,9 @@ async def health():
 
         row_result = engine.execute("""
             SELECT
-                (SELECT COUNT(*) FROM transactions) +
-                (SELECT COUNT(*) FROM vendor_payouts) +
-                (SELECT COUNT(*) FROM reconciliation_status) +
-                (SELECT COUNT(*) FROM chart_of_accounts) +
-                (SELECT COUNT(*) FROM vendor_list) AS total
+                (SELECT COUNT(*) FROM bank) +
+                (SELECT COUNT(*) FROM account) +
+                (SELECT COUNT(*) FROM transaction) AS total
         """)
         total_rows = row_result.rows[0][0] if row_result.success else 0
 
@@ -308,16 +312,13 @@ async def health():
 
 @app.get("/api/schema", response_model=SchemaResponse)
 async def schema():
-    """
-    Get database schema information — tables, columns, and row counts.
-    """
+    """Get database schema information — tables, columns, and row counts."""
     try:
         engine = QueryEngine(DUCKDB_PATH)
         table_info = engine.get_table_info()
 
         tables = []
         for table_name, columns in table_info.items():
-            # Get row count
             count_result = engine.execute(f"SELECT COUNT(*) FROM {table_name}")
             row_count = count_result.rows[0][0] if count_result.success else 0
 
@@ -330,7 +331,6 @@ async def schema():
                 row_count=row_count,
             ))
 
-        # Get views
         view_result = engine.execute("""
             SELECT table_name FROM information_schema.tables
             WHERE table_schema = 'main' AND table_type = 'VIEW'
@@ -345,16 +345,10 @@ async def schema():
 
 @app.get("/api/history", response_model=HistoryResponse)
 async def history(session_id: str = "default"):
-    """
-    Get conversation history for a session.
-    """
+    """Get conversation history for a session."""
     generator = _get_generator(session_id)
     turns = [
-        HistoryTurn(
-            query=turn["query"],
-            sql=turn["sql"],
-            summary=turn["summary"],
-        )
+        HistoryTurn(query=turn["query"], sql=turn["sql"], summary=turn["summary"])
         for turn in generator.conversation_history
     ]
     return HistoryResponse(session_id=session_id, turns=turns)
@@ -362,9 +356,7 @@ async def history(session_id: str = "default"):
 
 @app.delete("/api/history")
 async def clear_history(session_id: str = "default"):
-    """
-    Clear conversation history for a session.
-    """
+    """Clear conversation history for a session."""
     if session_id in _sessions:
         _sessions[session_id].conversation_history.clear()
         return {"status": "cleared", "session_id": session_id}
@@ -373,18 +365,12 @@ async def clear_history(session_id: str = "default"):
 
 @app.post("/api/export")
 async def export_csv(request: ExportRequest):
-    """
-    Execute a SQL query and return results as a downloadable CSV file.
-    """
+    """Execute a SQL query and return results as a downloadable CSV file."""
     from core.sql_validator import validate_sql
 
-    # Validate the SQL first
     validation = validate_sql(request.sql)
     if not validation.is_valid:
-        raise HTTPException(
-            status_code=400,
-            detail=f"SQL validation failed: {validation.error}"
-        )
+        raise HTTPException(status_code=400, detail=f"SQL validation failed: {validation.error}")
 
     try:
         engine = QueryEngine(DUCKDB_PATH)
@@ -393,7 +379,6 @@ async def export_csv(request: ExportRequest):
         if not result.success:
             raise HTTPException(status_code=400, detail=f"Query error: {result.error}")
 
-        # Build CSV in memory
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(result.columns)
@@ -404,9 +389,7 @@ async def export_csv(request: ExportRequest):
         return StreamingResponse(
             io.BytesIO(output.getvalue().encode("utf-8")),
             media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename={request.filename}"
-            },
+            headers={"Content-Disposition": f"attachment; filename={request.filename}"},
         )
     except HTTPException:
         raise
@@ -414,39 +397,34 @@ async def export_csv(request: ExportRequest):
         raise HTTPException(status_code=500, detail=f"Export error: {str(e)}")
 
 
-@app.get("/api/vendors")
-async def list_vendors():
+@app.get("/api/counterparties")
+async def list_counterparties():
     """
-    List all vendors in the database — useful for autocomplete and validation.
+    List distinct counterparty names extracted from transaction narration —
+    useful for autocomplete. There is no vendor master table in the real
+    client schema; these names come from core/description_parser.py.
     """
     try:
         engine = QueryEngine(DUCKDB_PATH)
         result = engine.execute("""
-            SELECT vendor_id, vendor_name, vendor_alias, category
-            FROM vendor_list
-            WHERE is_active = true
-            ORDER BY vendor_name
+            SELECT counterparty_name, rail_type, mention_count
+            FROM v_counterparty_lookup
+            ORDER BY mention_count DESC
         """)
         if result.success:
             return {
-                "vendors": [
-                    {
-                        "id": row[0],
-                        "name": row[1],
-                        "alias": row[2],
-                        "category": row[3],
-                    }
+                "counterparties": [
+                    {"name": row[0], "rail_type": row[1], "mention_count": row[2]}
                     for row in result.rows
                 ]
             }
-        raise HTTPException(status_code=500, detail="Failed to fetch vendors")
+        raise HTTPException(status_code=500, detail="Failed to fetch counterparties")
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Static UI Mounting ──
 STATIC_DIR = PROJECT_ROOT / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -457,4 +435,3 @@ if STATIC_DIR.exists():
         if index_file.exists():
             return FileResponse(str(index_file))
         return {"message": "Financial AI Chatbot API is running. Visit /docs for Swagger UI."}
-

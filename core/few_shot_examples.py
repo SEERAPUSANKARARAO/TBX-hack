@@ -1,114 +1,110 @@
 """
 Few-Shot Examples for SQL Generation
 =====================================
-Targeted examples that teach the LLM how to translate financial
-questions into correct DuckDB SQL. Each example demonstrates a
-different query pattern the system needs to handle.
+Targeted examples that teach the LLM how to translate bank-transaction
+questions into correct DuckDB SQL against the bank/account/transaction
+schema — including a multi-turn follow-up example, since reusing prior
+filters correctly is a named must-have, not just a nice-to-have.
 """
 
 
 FEW_SHOT_EXAMPLES = [
-    # ── Example 1: Simple vendor spend with SUM ──
+    # ── Example 1: Counterparty spend using the pre-aggregated view ──
     {
-        "question": "How much did we spend on Amazon Web Services last quarter?",
+        "question": "How much did we send to Amazon Retail India this quarter?",
         "sql": """SELECT
-    vendor_name,
-    SUM(amount) AS total_spend,
-    COUNT(*) AS transaction_count
-FROM transactions
-WHERE LOWER(vendor_name) = LOWER('Amazon Web Services Inc.')
-  AND QUARTER(transaction_date) = QUARTER(CURRENT_DATE) - 1
-  AND YEAR(transaction_date) = YEAR(CURRENT_DATE)
-GROUP BY vendor_name;""",
-        "explanation": "Simple vendor filter with date range using QUARTER(). Uses LOWER() for case-insensitive matching."
+    counterparty_name,
+    SUM(total_spend) AS total_spend,
+    SUM(transaction_count) AS transaction_count
+FROM v_counterparty_spend_summary
+WHERE counterparty_name ILIKE '%amazon retail india%'
+  AND txn_year = YEAR(DATE '2026-09-05')
+  AND txn_month IN (7, 8, 9)
+GROUP BY counterparty_name;""",
+        "explanation": "Uses the pre-aggregated view (avoids re-summing raw rows / fan-out) and ILIKE for partial, case-insensitive counterparty matching."
     },
 
-    # ── Example 2: Monthly spend breakdown with GROUP BY ──
+    # ── Example 2: Account balance ──
     {
-        "question": "Show me our monthly software subscription costs for 2026",
+        "question": "What's our available balance at HDFC Bank?",
         "sql": """SELECT
-    YEAR(transaction_date) AS year,
-    MONTH(transaction_date) AS month,
-    SUM(amount) AS total_spend,
-    COUNT(*) AS num_transactions
-FROM transactions
-WHERE category = 'Software & Subscriptions'
-  AND YEAR(transaction_date) = 2026
-GROUP BY YEAR(transaction_date), MONTH(transaction_date)
-ORDER BY year, month;""",
-        "explanation": "Monthly aggregation using GROUP BY on date parts. Filters by expense category."
+    masked_account_number,
+    bank_name,
+    available_balance
+FROM v_account_enriched
+WHERE bank_name ILIKE '%hdfc%'
+ORDER BY available_balance DESC;""",
+        "explanation": "Reads from v_account_enriched, never the raw account table — account_number is already masked there."
     },
 
-    # ── Example 3: Join — payouts with reconciliation status ──
+    # ── Example 3: Unreconciled transactions over a threshold ──
     {
-        "question": "Show all unreconciled transactions with their details",
+        "question": "Show unreconciled transactions over 50000.",
         "sql": """SELECT
-    r.reconciliation_id,
-    t.transaction_id,
-    t.transaction_date,
-    t.vendor_name,
-    t.amount AS transaction_amount,
-    t.category,
-    r.variance,
-    r.variance_reason,
-    r.notes
-FROM reconciliation_status r
-JOIN transactions t ON r.transaction_id = t.transaction_id
-WHERE r.status = 'unreconciled'
-ORDER BY t.amount DESC;""",
-        "explanation": "Joins reconciliation_status with transactions. Filters on reconciliation status enum."
+    transaction_id,
+    transaction_date,
+    counterparty_name,
+    description,
+    transaction_amount,
+    reconciliation_proxy_status
+FROM v_transaction_enriched
+WHERE reconciliation_proxy_status = 'unreconciled'
+  AND transaction_amount > 50000
+ORDER BY transaction_amount DESC;""",
+        "explanation": "reconciliation_proxy_status is a heuristic (no reference_id AND no UTR) — filters directly on it, includes the raw description so the user can verify."
     },
 
-    # ── Example 4: Reconciliation analysis with variance ──
+    # ── Example 4: Credit vs debit breakdown by bank ──
     {
-        "question": "What is the total unreconciled amount and which vendors have the highest variance?",
+        "question": "Break down total credits and debits by bank this year.",
         "sql": """SELECT
-    t.vendor_name,
-    COUNT(*) AS unreconciled_count,
-    SUM(t.amount) AS total_unreconciled_amount,
-    SUM(r.variance) AS total_variance
-FROM reconciliation_status r
-JOIN transactions t ON r.transaction_id = t.transaction_id
-WHERE r.status IN ('unreconciled', 'pending')
-GROUP BY t.vendor_name
-ORDER BY total_unreconciled_amount DESC;""",
-        "explanation": "Groups unreconciled/pending records by vendor. Aggregates both amounts and variances."
+    bank_name,
+    transaction_type,
+    COUNT(*) AS transaction_count,
+    SUM(transaction_amount) AS total_amount
+FROM v_transaction_enriched
+WHERE txn_year = YEAR(DATE '2026-09-05')
+GROUP BY bank_name, transaction_type
+ORDER BY bank_name, transaction_type;""",
+        "explanation": "Simple GROUP BY on two dimensions using the enriched view's pre-joined bank_name."
     },
 
-    # ── Example 5: Complex multi-table — vendor spend vs payouts comparison ──
+    # ── Example 5: Multi-turn follow-up — reuse filters, change only the date ──
     {
-        "question": "Compare total transactions vs total payouts for each vendor this year",
-        "sql": """WITH txn_totals AS (
-    SELECT
-        vendor_id,
-        vendor_name,
-        SUM(amount) AS total_transactions,
-        COUNT(*) AS txn_count
-    FROM transactions
-    WHERE YEAR(transaction_date) = 2026
-    GROUP BY vendor_id, vendor_name
-),
-payout_totals AS (
-    SELECT
-        vendor_id,
-        SUM(amount) AS total_payouts,
-        COUNT(*) AS payout_count,
-        SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END) AS completed_payouts
-    FROM vendor_payouts
-    WHERE YEAR(payout_date) = 2026
-    GROUP BY vendor_id
-)
-SELECT
-    t.vendor_name,
-    t.total_transactions,
-    t.txn_count,
-    COALESCE(p.total_payouts, 0) AS total_payouts,
-    COALESCE(p.payout_count, 0) AS payout_count,
-    t.total_transactions - COALESCE(p.completed_payouts, 0) AS outstanding_balance
-FROM txn_totals t
-LEFT JOIN payout_totals p ON t.vendor_id = p.vendor_id
-ORDER BY outstanding_balance DESC;""",
-        "explanation": "CTEs comparing transaction totals vs payout totals per vendor. LEFT JOIN to catch vendors with transactions but no payouts."
+        "question": (
+            "Turn 1: \"How much did we send to Bharti Airtel Limited last month?\"\n"
+            "Turn 2 (follow-up): \"and this month?\""
+        ),
+        "sql": """-- Turn 1
+SELECT counterparty_name, SUM(total_spend) AS total_spend, SUM(transaction_count) AS transaction_count
+FROM v_counterparty_spend_summary
+WHERE counterparty_name ILIKE '%bharti airtel limited%'
+  AND txn_year = 2026 AND txn_month = 8
+GROUP BY counterparty_name;
+
+-- Turn 2 (follow-up: same counterparty filter, only the month changes)
+SELECT counterparty_name, SUM(total_spend) AS total_spend, SUM(transaction_count) AS transaction_count
+FROM v_counterparty_spend_summary
+WHERE counterparty_name ILIKE '%bharti airtel limited%'
+  AND txn_year = 2026 AND txn_month = 9
+GROUP BY counterparty_name;""",
+        "explanation": "On a follow-up question, keep every filter from the previous turn (counterparty, direction, table) and change only what the follow-up explicitly asks to change — here, just the month."
+    },
+
+    # ── Example 6: Anomaly-adjacent — largest transactions for a counterparty ──
+    {
+        "question": "What's the largest payment we've made to Selection Electronics?",
+        "sql": """SELECT
+    transaction_id,
+    transaction_date,
+    transaction_amount,
+    description
+FROM v_transaction_enriched
+WHERE counterparty_name ILIKE '%selection electronics%'
+  AND transaction_type = 'debit'
+ORDER BY transaction_amount DESC
+LIMIT 5;""",
+        "explanation": "Row-level detail query (not aggregation) — uses v_transaction_enriched directly, filtered to the spend direction."
     },
 ]
 
@@ -117,18 +113,9 @@ def format_few_shot_messages() -> list[dict]:
     """
     Format few-shot examples as alternating user/assistant messages
     for injection into the LLM conversation.
-
-    Returns:
-        List of message dicts with 'role' and 'content' keys.
     """
     messages = []
     for example in FEW_SHOT_EXAMPLES:
-        messages.append({
-            "role": "user",
-            "content": f"Question: {example['question']}"
-        })
-        messages.append({
-            "role": "assistant",
-            "content": f"```sql\n{example['sql']}\n```"
-        })
+        messages.append({"role": "user", "content": f"Question: {example['question']}"})
+        messages.append({"role": "assistant", "content": f"```sql\n{example['sql']}\n```"})
     return messages

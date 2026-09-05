@@ -42,16 +42,6 @@ class ExportRequest(BaseModel):
 
 # ── Response Models ──
 
-class EntityInfo(BaseModel):
-    """Resolved entity information."""
-    vendor_name: str | None = None
-    vendor_id: int | None = None
-    vendor_match_score: float | None = None
-    start_date: str | None = None
-    end_date: str | None = None
-    unresolved_vendor: str | None = None
-
-
 class QueryResultData(BaseModel):
     """Structured query result data."""
     success: bool
@@ -67,7 +57,7 @@ class QueryResultData(BaseModel):
 class AnomalyInfo(BaseModel):
     """Statistical anomaly alert."""
     transaction_id: str | None = None
-    vendor_name: str
+    counterparty_name: str
     amount: float
     historical_mean: float
     historical_std: float
@@ -95,10 +85,13 @@ class QueryResponse(BaseModel):
     clarification_needed: str | None = None
     anomalies: list[AnomalyInfo] = []
     confidence: ConfidenceInfo | None = None
+    numbers_grounded: bool = True
     llm_provider: str = ""
     llm_model: str = ""
     total_time_ms: float = 0.0
     retries: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     error: str | None = None
 
 

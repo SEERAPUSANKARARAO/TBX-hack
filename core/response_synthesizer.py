@@ -1,15 +1,90 @@
 """
 Response Synthesizer — Natural Language Answer Generation
 =========================================================
-Takes the user's query and the SQL query results, then uses
-the LLM to generate a concise, conversational explanation.
-Falls back to a template-based response if the LLM is unavailable.
+Takes the user's query and the SQL query results, then uses the LLM to
+generate a concise, conversational explanation. Unlike a prompt-only
+"don't invent numbers" instruction, every number the LLM states is
+verified against the actual query result before the answer is trusted —
+if verification fails, the response falls back to a deterministic,
+template-built answer instead of the LLM's prose. This is the
+enforcement the "never hallucinate a number" requirement needs: a
+check, not just an instruction.
 """
+import re
 import logging
 
 import httpx
 
+from core.llm_http import post_with_retry
+
 logger = logging.getLogger(__name__)
+
+
+def _collect_allowed_numbers(query_result: dict) -> set[str]:
+    """
+    Every numeric value that legitimately appears in the query result,
+    normalized to a small set of comparable string forms. Any number the
+    LLM states must match one of these — it's not allowed to compute or
+    invent a new one (a total, a delta, a percentage, anything).
+    """
+    allowed = set()
+
+    def add(value):
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return
+        allowed.add(f"{f:.2f}")
+        allowed.add(f"{f:.0f}")
+        allowed.add(f"{round(f):,}")
+        allowed.add(f"{f:,.2f}")
+
+    rows = query_result.get("rows", [])
+    add(len(rows))
+    add(query_result.get("row_count", 0))
+    for row in rows:
+        values = row.values() if isinstance(row, dict) else row
+        for v in values:
+            add(v)
+
+    return allowed
+
+
+def _extract_numbers(text: str) -> list[str]:
+    """Numeric tokens the LLM's answer states (currency-formatted or bare)."""
+    return re.findall(r'-?\d[\d,]*\.?\d*', text)
+
+
+def _normalize(token: str) -> str:
+    return token.replace(",", "").strip()
+
+
+def _verify_numbers_grounded(answer: str, allowed_numbers: set[str]) -> bool:
+    """
+    True if every number-looking token in `answer` matches a value that
+    actually appeared in the query result (allowing for $/comma/rounding
+    formatting differences). A year (e.g. "2026") or a small ordinal
+    ("top 5") is not treated as a groundable figure.
+    """
+    for raw in _extract_numbers(answer):
+        token = _normalize(raw)
+        if not token or token in (".", "-"):
+            continue
+        try:
+            value = float(token)
+        except ValueError:
+            continue
+        # Skip bare 4-digit years and single/double-digit small ordinals
+        # ("top 5", "5 results") — these aren't "computed figures", they're
+        # structural, and legitimately won't appear as a result cell.
+        if re.fullmatch(r'\d{4}', token) and 1900 <= value <= 2100:
+            continue
+        if value == int(value) and abs(value) < 32 and "." not in token:
+            continue
+        candidates = {f"{value:.2f}", f"{value:.0f}", token}
+        if not candidates & allowed_numbers:
+            return False
+    return True
 
 
 def synthesize_response(
@@ -26,71 +101,75 @@ def synthesize_response(
     groq_api_key: str = "",
     temperature: float = 0.3,
     max_tokens: int = 512,
-) -> str:
+) -> tuple[str, bool, dict]:
     """
     Generate a natural language answer from SQL results.
 
-    Args:
-        user_query: The original user question.
-        sql: The executed SQL query.
-        query_result: Dict with 'columns', 'rows', 'row_count', etc.
-        llm_provider: Which LLM backend to use.
-        llm_model: Model name.
-        (other LLM connection params)
-
     Returns:
-        A conversational answer string.
+        (answer_text, numbers_grounded, usage) — numbers_grounded is False
+        when the LLM's prose was rejected for stating a figure not traceable
+        to the query result and a deterministic template was substituted
+        instead. usage is {"prompt_tokens", "completion_tokens", "cost"}.
     """
-    # If no results or error, return a template response
+    empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0}
+
     if not query_result.get("success"):
-        return f"I encountered an error running the query: {query_result.get('error', 'Unknown error')}"
+        return f"I encountered an error running the query: {query_result.get('error', 'Unknown error')}", True, empty_usage
 
     if query_result.get("row_count", 0) == 0:
         return (
-            "The query returned no results. This could mean the data doesn't "
-            "exist for the specified filters, or the date range/vendor name "
-            "might need adjustment."
+            "I couldn't find any matching records for that. This could mean the data doesn't "
+            "exist for the filters you asked about, or a date range/counterparty name might "
+            "need adjusting — I'd rather say so than guess.",
+            True,
+            empty_usage,
         )
 
-    # Build the synthesis prompt
-    # Limit rows to avoid token overflow
     rows = query_result.get("rows", [])[:15]
     columns = query_result.get("columns", [])
     row_count = query_result.get("row_count", 0)
 
-    # Format results as a compact table
     result_text = _format_results_for_llm(columns, rows, row_count)
 
     synthesis_prompt = f"""You are a financial data analyst assistant. Based on the SQL query results below, provide a clear, concise answer to the user's question.
 
 RULES:
-1. Be conversational but precise. Use exact numbers from the results.
-2. Format currency values with $ and commas (e.g., $12,345.67).
-3. If there are multiple rows, summarize the key findings.
-4. Keep your answer to 2-4 sentences unless more detail is needed.
+1. Be conversational but precise. Use ONLY exact numbers that appear in the results below — do not
+   compute, round, sum, or derive any new figure (no percentages, deltas, or trends not already
+   present as a column).
+2. Format currency values with commas (e.g., 12,345.67). This is Indian bank data — do not add a $ sign.
+3. If there are multiple rows, summarize the key findings without inventing new numbers.
+4. Keep your answer to 2-4 sentences unless more detail is genuinely needed.
 5. Do NOT mention SQL or database internals. Speak as if you looked up the data directly.
-6. If results show trends or notable patterns, briefly mention them.
 
 USER QUESTION: {user_query}
 
 QUERY RESULTS ({row_count} rows):
 {result_text}"""
 
-    messages = [
-        {"role": "user", "content": synthesis_prompt}
-    ]
+    messages = [{"role": "user", "content": synthesis_prompt}]
 
     try:
-        response = _call_llm(
+        response, usage = _call_llm(
             messages, llm_provider, llm_model,
             ollama_base_url, openrouter_api_key, openrouter_base_url,
             openai_api_key, openai_base_url,
             groq_api_key, temperature, max_tokens,
         )
-        return response.strip()
+        answer = response.strip()
     except Exception as e:
         logger.warning("LLM synthesis failed, using template: %s", e)
-        return _template_response(user_query, columns, rows, row_count)
+        return _template_response(user_query, columns, rows, row_count), True, empty_usage
+
+    allowed_numbers = _collect_allowed_numbers(query_result)
+    if _verify_numbers_grounded(answer, allowed_numbers):
+        return answer, True, usage
+
+    logger.warning(
+        "Synthesized answer stated a number not present in the query result — "
+        "falling back to a deterministic template. answer=%r", answer
+    )
+    return _template_response(user_query, columns, rows, row_count), False, usage
 
 
 def _format_results_for_llm(columns: list, rows: list, total_count: int) -> str:
@@ -98,12 +177,7 @@ def _format_results_for_llm(columns: list, rows: list, total_count: int) -> str:
     if not columns or not rows:
         return "No data"
 
-    lines = []
-    # Header
-    lines.append(" | ".join(str(c) for c in columns))
-    lines.append("-" * 60)
-
-    # Data rows
+    lines = [" | ".join(str(c) for c in columns), "-" * 60]
     for row in rows:
         if isinstance(row, dict):
             vals = [str(row.get(c, "")) for c in columns]
@@ -119,18 +193,9 @@ def _format_results_for_llm(columns: list, rows: list, total_count: int) -> str:
     return "\n".join(lines)
 
 
-def _template_response(
-    user_query: str,
-    columns: list,
-    rows: list,
-    row_count: int,
-) -> str:
-    """
-    Generate a basic template-based response when LLM is unavailable.
-    Tries to be useful by extracting key values from the results.
-    """
+def _template_response(user_query: str, columns: list, rows: list, row_count: int) -> str:
+    """Deterministic fallback: only ever restates values already in the result."""
     if row_count == 1 and len(columns) <= 3:
-        # Single-value result (e.g., SUM, COUNT)
         row = rows[0]
         if isinstance(row, dict):
             parts = [f"{k}: {v}" for k, v in row.items()]
@@ -142,6 +207,15 @@ def _template_response(
         return f"Found {row_count} result{'s' if row_count != 1 else ''}. See the table below for details."
 
     return f"Found {row_count} results matching your query. The data is shown in the table below."
+
+
+def _usage_from(data: dict) -> dict:
+    usage = data.get("usage") or {}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "cost": usage.get("cost", 0.0),
+    }
 
 
 def _call_llm(
@@ -156,8 +230,8 @@ def _call_llm(
     groq_api_key: str,
     temperature: float,
     max_tokens: int,
-) -> str:
-    """Call the configured LLM backend for synthesis."""
+) -> tuple[str, dict]:
+    """Call the configured LLM backend for synthesis. Returns (content, usage)."""
     if provider == "openrouter":
         url = f"{openrouter_base_url}/chat/completions"
         headers = {
@@ -168,40 +242,43 @@ def _call_llm(
         }
         payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         with httpx.Client(timeout=60) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            resp = post_with_retry(client, url, json=payload, headers=headers)
+            data = resp.json()
+            return data["choices"][0]["message"]["content"], _usage_from(data)
 
     elif provider == "ollama":
         url = f"{ollama_base_url}/api/chat"
         payload = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
+            "model": model, "messages": messages, "stream": False,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
         with httpx.Client(timeout=60) as client:
-            resp = client.post(url, json=payload)
-            resp.raise_for_status()
-            return resp.json()["message"]["content"]
+            resp = post_with_retry(client, url, json=payload)
+            data = resp.json()
+            usage = {
+                "prompt_tokens": data.get("prompt_eval_count", 0),
+                "completion_tokens": data.get("eval_count", 0),
+                "cost": 0.0,
+            }
+            return data["message"]["content"], usage
 
     elif provider == "openai":
         url = f"{openai_base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {openai_api_key}", "Content-Type": "application/json"}
         payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         with httpx.Client(timeout=60) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            resp = post_with_retry(client, url, json=payload, headers=headers)
+            data = resp.json()
+            return data["choices"][0]["message"]["content"], _usage_from(data)
 
     elif provider == "groq":
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
         payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         with httpx.Client(timeout=60) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            resp = post_with_retry(client, url, json=payload, headers=headers)
+            data = resp.json()
+            return data["choices"][0]["message"]["content"], _usage_from(data)
 
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")

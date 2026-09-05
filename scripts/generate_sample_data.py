@@ -99,8 +99,13 @@ def gen_description(name, style):
         code = f"ZBFLCTP{rand_digits(3)}PBL{rand_digits(8)}"
         return f"R/{ref}/{code}//{name}/{ref} /{name}"
     if style == "ft_bare":
-        suffix = random.choice(["", "   SELECT CITY SAKET DELHI", "   ANDHERI WEST MUMBAI", "   PHOENIX MALL"])
-        return f"FT-RE{rand_digits(10)}-{name.replace(' ', '')}{suffix}"
+        # Keep the name naturally spaced — a real sample happens to show one
+        # word glued to the field boundary, but collapsing the whole name
+        # (as an earlier version of this generator did) produces a string no
+        # user would ever type back in a follow-up question. No appended
+        # location suffix either: it would fragment GROUP BY counterparty_name
+        # into several near-duplicate rows for the same real counterparty.
+        return f"FT-RE{rand_digits(10)}-{name}"
     return name
 
 

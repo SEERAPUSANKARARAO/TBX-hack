@@ -10,6 +10,12 @@ from pathlib import Path
 
 import duckdb
 
+# Defense-in-depth: even if the SQL validator's PII guard were ever bypassed,
+# a value returned under one of these column names is masked here before it
+# reaches the LLM or the API response. The validator is the primary defense;
+# this is the belt-and-suspenders layer.
+SENSITIVE_COLUMNS = {"account_number", "utr_number"}
+
 
 @dataclass
 class QueryResult:
@@ -144,13 +150,19 @@ class QueryEngine:
             try:
                 result = con.execute(sql)
                 columns = [desc[0] for desc in result.description]
-                rows = result.fetchall()
+                rows = [list(row) for row in result.fetchall()]
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+                sensitive_idx = [i for i, c in enumerate(columns) if c.lower() in SENSITIVE_COLUMNS]
+                if sensitive_idx:
+                    for row in rows:
+                        for i in sensitive_idx:
+                            row[i] = "***MASKED***"
 
                 return QueryResult(
                     success=True,
                     columns=columns,
-                    rows=[list(row) for row in rows],
+                    rows=rows,
                     row_count=len(rows),
                     execution_time_ms=elapsed_ms,
                     sql=sql,
@@ -196,12 +208,12 @@ class QueryEngine:
 
             info = {}
             for (table_name,) in tables:
-                columns = con.execute(f"""
+                columns = con.execute("""
                     SELECT column_name, data_type, is_nullable
                     FROM information_schema.columns
-                    WHERE table_name = '{table_name}'
+                    WHERE table_name = ?
                     ORDER BY ordinal_position
-                """).fetchall()
+                """, [table_name]).fetchall()
                 info[table_name] = [
                     {"name": col, "type": dtype, "nullable": nullable}
                     for col, dtype, nullable in columns

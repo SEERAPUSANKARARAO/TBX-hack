@@ -24,9 +24,17 @@ def compute_confidence(
     retries: int = 0,
     resolved_entities: list[dict] = None,
     clarification_needed: Optional[str] = None,
+    numbers_grounded: bool = True,
 ) -> ConfidenceAssessment:
     """
     Calculate confidence index for the query pipeline output.
+
+    `numbers_grounded` is a hard override: it's False only when the
+    synthesized answer stated a figure that couldn't be verified against
+    the actual query result and had to be replaced with a deterministic
+    template (see core.response_synthesizer) — that's a more severe
+    failure than a low fuzzy-match score, so it forces LOW regardless of
+    everything else.
     """
     if clarification_needed:
         return ConfidenceAssessment(
@@ -40,6 +48,14 @@ def compute_confidence(
             score=10,
             level="LOW",
             reasons=["SQL validation or execution failed."],
+        )
+
+    if not numbers_grounded:
+        return ConfidenceAssessment(
+            score=30,
+            level="LOW",
+            reasons=["The synthesized answer stated a figure that couldn't be verified against the "
+                     "query result, so a deterministic fallback answer was used instead."],
         )
 
     score = 100

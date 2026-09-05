@@ -1,12 +1,12 @@
 """
-Statistical Anomaly Detector — Financial Outlier Detection
-==========================================================
-Identifies anomalous financial transactions using statistical thresholds:
-    Threshold = μ_historical + 2.5 * σ_historical
+Statistical Anomaly Detector — Bank Transaction Outlier Detection
+==================================================================
+Identifies anomalous transactions using statistical thresholds:
+    Threshold = mu_historical + 2.5 * sigma_historical
 
-When queries return transactions or payouts, this module evaluates whether
-any items significantly exceed historical baselines and generates actionable
-audit alerts.
+Computed per counterparty, on debits only (spend direction) — mixing
+credits in would distort the baseline, since incoming payments follow
+a different distribution than outgoing spend.
 """
 import logging
 from dataclasses import dataclass
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class AnomalyAlert:
     """Represents a detected financial anomaly."""
     transaction_id: Optional[str]
-    vendor_name: str
+    counterparty_name: str
     amount: float
     historical_mean: float
     historical_std: float
@@ -32,39 +32,37 @@ class AnomalyAlert:
 
 class AnomalyDetector:
     """
-    Evaluates transactions and payouts against historical statistical baselines
-    in DuckDB to flag high-value anomalies.
+    Evaluates transactions against historical per-counterparty statistical
+    baselines in DuckDB to flag high-value anomalies.
     """
 
     def __init__(self, db_path: str, z_threshold: float = 2.5):
         self.db_path = db_path
         self.z_threshold = z_threshold
-        self._stats_cache: dict[str, dict] = {}
 
-    def _load_vendor_stats(self, engine: QueryEngine) -> dict[str, dict]:
-        """
-        Compute baseline stats (mean, stddev, count) for each vendor across transactions.
-        """
+    def _load_counterparty_stats(self, engine: QueryEngine) -> dict[str, dict]:
+        """Baseline stats (mean, stddev, count) per counterparty, debits only."""
         sql = """
             SELECT
-                vendor_name,
-                AVG(amount) AS mean_amount,
-                STDDEV_SAMP(amount) AS std_amount,
+                counterparty_name,
+                AVG(transaction_amount) AS mean_amount,
+                STDDEV_SAMP(transaction_amount) AS std_amount,
                 COUNT(*) AS tx_count,
-                MAX(amount) AS max_amount
-            FROM transactions
-            GROUP BY vendor_name
+                MAX(transaction_amount) AS max_amount
+            FROM v_transaction_enriched
+            WHERE transaction_type = 'debit' AND counterparty_name IS NOT NULL
+            GROUP BY counterparty_name
             HAVING COUNT(*) >= 2
         """
         res = engine.execute(sql)
         stats = {}
         if res.success:
             for row in res.rows:
-                v_name = row[0]
+                name = row[0]
                 mean_val = float(row[1] or 0.0)
                 std_val = float(row[2] or 0.0)
-                stats[v_name.lower()] = {
-                    "vendor_name": v_name,
+                stats[name.lower()] = {
+                    "counterparty_name": name,
                     "mean": mean_val,
                     "std": std_val,
                     "count": int(row[3]),
@@ -80,36 +78,31 @@ class AnomalyDetector:
         tables_touched: list[str] = None,
     ) -> list[AnomalyAlert]:
         """
-        Inspect query results to find any transactions that exceed statistical thresholds.
-
-        Args:
-            query_columns: Column names of the query result.
-            query_rows: List of row data (tuples or lists).
-            tables_touched: Tables touched by the SQL query.
-
-        Returns:
-            List of AnomalyAlert objects.
+        Inspect query results for transactions exceeding statistical thresholds.
         """
         if not query_rows or not query_columns:
             return []
 
-        # Check if query involves transactions or payouts
         touched = [t.lower() for t in (tables_touched or [])]
-        if touched and not any(t in touched for t in ["transactions", "vendor_payouts", "v_vendor_spend_summary"]):
+        relevant_tables = {"transaction", "v_transaction_enriched", "v_counterparty_spend_summary"}
+        if touched and not any(t in touched for t in relevant_tables):
             return []
 
         cols_lower = [str(c).lower() for c in query_columns]
 
-        # Identify column indices
-        amount_idx = next((i for i, c in enumerate(cols_lower) if c in ["amount", "total_amount", "spend", "total_spend"]), None)
-        vendor_idx = next((i for i, c in enumerate(cols_lower) if "vendor" in c or c == "name"), None)
-        tx_id_idx = next((i for i, c in enumerate(cols_lower) if "transaction_id" in c or "id" in c), None)
+        amount_idx = next(
+            (i for i, c in enumerate(cols_lower)
+             if c in ("transaction_amount", "total_spend", "total_amount", "amount", "spend")),
+            None,
+        )
+        counterparty_idx = next((i for i, c in enumerate(cols_lower) if "counterparty" in c), None)
+        tx_id_idx = next((i for i, c in enumerate(cols_lower) if "transaction_id" in c), None)
 
         if amount_idx is None:
             return []
 
         engine = QueryEngine(self.db_path)
-        stats = self._load_vendor_stats(engine)
+        stats = self._load_counterparty_stats(engine)
 
         alerts: list[AnomalyAlert] = []
 
@@ -120,42 +113,39 @@ class AnomalyDetector:
             except (ValueError, TypeError):
                 continue
 
-            vendor = None
-            if vendor_idx is not None:
-                vendor = row[vendor_idx] if isinstance(row, (list, tuple)) else row.get(query_columns[vendor_idx])
+            counterparty = None
+            if counterparty_idx is not None:
+                counterparty = row[counterparty_idx] if isinstance(row, (list, tuple)) else row.get(query_columns[counterparty_idx])
 
             tx_id = None
             if tx_id_idx is not None:
                 tx_id = str(row[tx_id_idx] if isinstance(row, (list, tuple)) else row.get(query_columns[tx_id_idx]))
 
-            # If vendor is known, check against vendor stats
-            if vendor and str(vendor).lower() in stats:
-                v_stat = stats[str(vendor).lower()]
-                threshold = v_stat["threshold"]
-                mean = v_stat["mean"]
-                std = v_stat["std"]
+            if counterparty and str(counterparty).lower() in stats:
+                c_stat = stats[str(counterparty).lower()]
+                threshold = c_stat["threshold"]
+                mean = c_stat["mean"]
+                std = c_stat["std"]
 
-                # For small sample sizes, a large outlier distorts the standard deviation.
-                # Threshold uses z_threshold, with adaptive fallback for small samples (N < 6).
                 is_outlier = False
                 if std > 0:
                     if amount > threshold:
                         is_outlier = True
-                    elif v_stat["count"] <= 5 and amount > mean * 1.5 and amount > 5000:
+                    elif c_stat["count"] <= 5 and amount > mean * 1.5 and amount > 5000:
                         is_outlier = True
                 elif amount > mean * 1.8 and amount > 5000:
                     is_outlier = True
 
                 if is_outlier:
                     pct_above = ((amount - mean) / mean) * 100
-                    tx_label = f"Transaction #{tx_id}" if tx_id else f"Spend entry"
+                    tx_label = f"Transaction #{tx_id}" if tx_id else "Spend entry"
                     msg = (
-                        f"⚠️ **Anomaly Alert**: {tx_label} (${amount:,.2f}) to **{v_stat['vendor_name']}** "
-                        f"is {pct_above:,.1f}% higher than their historical average (${mean:,.2f})."
+                        f"⚠️ **Anomaly Alert**: {tx_label} ({amount:,.2f}) to **{c_stat['counterparty_name']}** "
+                        f"is {pct_above:,.1f}% higher than their historical average ({mean:,.2f})."
                     )
                     alerts.append(AnomalyAlert(
                         transaction_id=tx_id,
-                        vendor_name=v_stat["vendor_name"],
+                        counterparty_name=c_stat["counterparty_name"],
                         amount=amount,
                         historical_mean=mean,
                         historical_std=std,

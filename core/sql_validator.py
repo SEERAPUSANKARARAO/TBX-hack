@@ -2,7 +2,9 @@
 SQL Validator — Guardrails for Generated SQL
 =============================================
 Uses sqlglot to parse and validate SQL before execution.
-Blocks destructive operations and verifies schema references.
+Blocks destructive operations, verifies schema references, and blocks
+direct selection of sensitive PII columns (account_number, utr_number)
+— the client's data dictionary requires these never be shown raw.
 """
 import re
 from dataclasses import dataclass
@@ -11,44 +13,35 @@ import sqlglot
 from sqlglot import exp
 
 
-# Tables and columns that exist in our schema
 VALID_TABLES = {
-    "transactions", "vendor_payouts", "reconciliation_status",
-    "chart_of_accounts", "vendor_list",
-    # Views
-    "v_transactions_enriched", "v_reconciliation_details",
-    "v_vendor_spend_summary", "v_reconciliation_summary",
-    "v_vendor_lookup", "v_reconciliation_statuses",
-    "v_expense_categories", "v_account_types",
+    "bank", "account", "transaction", "transaction_derived",
+    "v_account_enriched", "v_transaction_enriched",
+    "v_counterparty_spend_summary", "v_counterparty_lookup",
+    "v_reconciliation_summary",
 }
+
+# Raw sensitive columns on the base tables. Never allowed in generated SQL —
+# the enriched views expose masked_account_number / masked_utr_token instead.
+SENSITIVE_COLUMNS = {"account_number", "utr_number"}
 
 VALID_COLUMNS = {
-    # transactions
-    "transaction_id", "transaction_date", "posted_date", "vendor_id",
-    "vendor_name", "amount", "currency", "transaction_type", "account_code",
-    "category", "description", "reference_number", "payment_method",
-    # vendor_payouts
-    "payout_id", "payout_date", "bank_reference", "invoice_number",
-    "status", "notes",
-    # reconciliation_status
-    "reconciliation_id", "reconciliation_date", "matched_amount",
-    "variance", "variance_reason", "reconciled_by",
-    # chart_of_accounts
-    "account_id", "account_name", "account_type",
-    "parent_account_code", "is_active",
-    # vendor_list
-    "vendor_alias", "contact_email", "phone", "address", "payment_terms",
-    # View columns
-    "vendor_category", "expense_category", "txn_year", "txn_month",
-    "txn_quarter", "txn_day_of_week",
-    "reconciliation_status", "transaction_amount", "payout_amount",
-    "payout_status", "transaction_ref",
-    "spend_year", "spend_month", "transaction_count", "total_spend",
-    "avg_transaction", "min_transaction", "max_transaction",
-    "record_count", "total_variance", "avg_variance",
+    # bank
+    "bank_code", "bank_name",
+    # account
+    "account_id", "entity_id", "program_id", "available_balance",
+    # transaction
+    "transaction_id", "transaction_date", "transaction_type", "description",
+    "transaction_amount", "transaction_reference_id",
+    # transaction_derived
+    "rail_type", "counterparty_name", "counterparty_confidence",
+    # view-only derived columns
+    "masked_account_number", "masked_utr_token", "has_reference", "has_utr",
+    "reconciliation_proxy_status", "txn_year", "txn_month", "txn_quarter",
+    "txn_day_of_week", "total_spend", "avg_transaction", "min_transaction",
+    "max_transaction", "transaction_count", "mention_count", "record_count",
+    "total_amount",
 }
 
-# SQL statements that are BLOCKED (destructive operations)
 BLOCKED_STATEMENT_TYPES = {
     exp.Update, exp.Delete, exp.Drop, exp.Insert,
     exp.Alter, exp.Create,
@@ -70,32 +63,17 @@ class ValidationResult:
 def extract_sql_from_response(llm_response: str) -> str:
     """
     Extract SQL from an LLM response that may contain markdown code blocks.
-
-    Handles:
-    - ```sql ... ``` blocks
-    - ``` ... ``` blocks
-    - Raw SQL text
-
-    Args:
-        llm_response: Raw LLM output.
-
-    Returns:
-        Extracted SQL string.
     """
-    # Try to extract from ```sql ... ``` blocks
     sql_block_pattern = r"```sql\s*\n?(.*?)```"
     matches = re.findall(sql_block_pattern, llm_response, re.DOTALL | re.IGNORECASE)
     if matches:
         return matches[0].strip()
 
-    # Try generic ``` ... ``` blocks
     generic_block_pattern = r"```\s*\n?(.*?)```"
     matches = re.findall(generic_block_pattern, llm_response, re.DOTALL)
     if matches:
         return matches[0].strip()
 
-    # Assume the whole response is SQL, strip any leading/trailing text
-    # Look for SELECT as the start of the query
     lines = llm_response.strip().split("\n")
     sql_lines = []
     in_sql = False
@@ -109,7 +87,6 @@ def extract_sql_from_response(llm_response: str) -> str:
     if sql_lines:
         return "\n".join(sql_lines).strip().rstrip(";") + ";"
 
-    # Last resort: return as-is
     return llm_response.strip()
 
 
@@ -122,6 +99,7 @@ def validate_sql(sql: str) -> ValidationResult:
     2. No destructive operations (UPDATE, DELETE, DROP, etc.)
     3. Only SELECT statements allowed
     4. Referenced tables exist in our schema
+    5. No raw selection of sensitive PII columns (account_number, utr_number)
 
     Args:
         sql: The SQL string to validate.
@@ -130,56 +108,36 @@ def validate_sql(sql: str) -> ValidationResult:
         ValidationResult with is_valid flag and optional error message.
     """
     if not sql or not sql.strip():
-        return ValidationResult(
-            is_valid=False,
-            sql=sql,
-            error="Empty SQL query."
-        )
+        return ValidationResult(is_valid=False, sql=sql, error="Empty SQL query.")
 
     warnings = []
 
-    # ── Step 1: Parse the SQL ──
+    # ── Step 1: Parse ──
     try:
         parsed = sqlglot.parse(sql, dialect="duckdb")
     except sqlglot.errors.ParseError as e:
-        return ValidationResult(
-            is_valid=False,
-            sql=sql,
-            error=f"SQL syntax error: {str(e)}"
-        )
+        return ValidationResult(is_valid=False, sql=sql, error=f"SQL syntax error: {str(e)}")
 
     if not parsed:
-        return ValidationResult(
-            is_valid=False,
-            sql=sql,
-            error="Failed to parse SQL — no statements found."
-        )
+        return ValidationResult(is_valid=False, sql=sql, error="Failed to parse SQL — no statements found.")
 
-    # ── Step 2: Check for destructive operations ──
+    # ── Step 2: Block destructive operations, require SELECT ──
     for statement in parsed:
         if statement is None:
             continue
 
-        # Check the statement type
         for blocked_type in BLOCKED_STATEMENT_TYPES:
             if isinstance(statement, blocked_type):
                 return ValidationResult(
-                    is_valid=False,
-                    sql=sql,
+                    is_valid=False, sql=sql,
                     error=f"BLOCKED: {blocked_type.__name__} statements are not allowed. Only SELECT queries are permitted."
                 )
 
-        # Must be a SELECT (or a CTE with SELECT)
         if not isinstance(statement, exp.Select):
-            # Check if it's a subquery or CTE that contains a SELECT
-            has_select = any(
-                isinstance(node, exp.Select)
-                for node in statement.walk()
-            )
+            has_select = any(isinstance(node, exp.Select) for node in statement.walk())
             if not has_select:
                 return ValidationResult(
-                    is_valid=False,
-                    sql=sql,
+                    is_valid=False, sql=sql,
                     error=f"Only SELECT queries are allowed. Got: {type(statement).__name__}"
                 )
 
@@ -187,58 +145,95 @@ def validate_sql(sql: str) -> ValidationResult:
     for statement in parsed:
         if statement is None:
             continue
+        cte_names = {cte.alias.lower() for cte in statement.find_all(exp.CTE) if cte.alias}
         for table in statement.find_all(exp.Table):
             table_name = table.name.lower() if table.name else None
-            if table_name and table_name not in VALID_TABLES:
-                # Check if it's a CTE alias (not a real table)
-                # CTEs appear as table references but are defined in WITH clauses
-                cte_names = set()
-                for cte in statement.find_all(exp.CTE):
-                    if cte.alias:
-                        cte_names.add(cte.alias.lower())
+            if table_name and table_name not in VALID_TABLES and table_name not in cte_names:
+                warnings.append(
+                    f"Table '{table_name}' not found in schema. "
+                    f"Valid tables: {', '.join(sorted(VALID_TABLES))}"
+                )
 
-                if table_name not in cte_names:
-                    warnings.append(
-                        f"Table '{table_name}' not found in schema. "
-                        f"Valid tables: {', '.join(sorted(VALID_TABLES))}"
-                    )
-
-    # If there are warnings about unknown tables, make it an error
     table_errors = [w for w in warnings if "not found in schema" in w]
     if table_errors:
-        return ValidationResult(
-            is_valid=False,
-            sql=sql,
-            error=table_errors[0],
-            warnings=warnings
-        )
+        return ValidationResult(is_valid=False, sql=sql, error=table_errors[0], warnings=warnings)
 
-    return ValidationResult(
-        is_valid=True,
-        sql=sql,
-        warnings=warnings if warnings else None
-    )
+    # ── Step 4: Block raw PII columns ──
+    # Narrow and deliberate rather than a full column linter: false positives
+    # here would break legitimate queries, but a PII leak is unacceptable, so
+    # this specific check is a hard block regardless of alias/qualifier.
+    for statement in parsed:
+        if statement is None:
+            continue
+        for col in statement.find_all(exp.Column):
+            col_name = col.name.lower() if col.name else None
+            if col_name in SENSITIVE_COLUMNS:
+                return ValidationResult(
+                    is_valid=False, sql=sql,
+                    error=(
+                        f"BLOCKED: '{col_name}' is a sensitive column and must never be selected raw. "
+                        f"Use masked_account_number (from v_account_enriched / v_transaction_enriched) or "
+                        f"masked_utr_token (from v_transaction_enriched) instead."
+                    ),
+                )
+
+    # Extra guard: `SELECT *` directly against `account` or `transaction`
+    # (the raw base tables) could expose PII without ever naming the column.
+    # Scoped to each select's OWN from/join targets (not `select.find_all`,
+    # which would also recurse into a sibling WITH-clause's CTE bodies and
+    # misattribute an unrelated CTE's tables to this select's star).
+    for statement in parsed:
+        if statement is None:
+            continue
+        for select in statement.find_all(exp.Select):
+            selects_star = any(isinstance(e, exp.Star) for e in select.expressions)
+            if not selects_star:
+                continue
+            scope_tables = []
+            from_clause = select.args.get("from_")
+            if from_clause:
+                scope_tables.extend(from_clause.find_all(exp.Table))
+            for join in select.args.get("joins") or []:
+                scope_tables.extend(join.find_all(exp.Table))
+            for table in scope_tables:
+                if table.name and table.name.lower() in ("account", "transaction"):
+                    return ValidationResult(
+                        is_valid=False, sql=sql,
+                        error=(
+                            f"BLOCKED: 'SELECT *' against the raw '{table.name}' table can expose sensitive "
+                            f"columns. Select explicit columns, or query v_account_enriched / "
+                            f"v_transaction_enriched instead."
+                        ),
+                    )
+
+    return ValidationResult(is_valid=True, sql=sql, warnings=warnings if warnings else None)
+
+
+def enforce_row_limit(sql: str, max_rows: int = 1000) -> str:
+    """
+    Ensure the top-level SELECT has a LIMIT, so a broad/unfiltered query
+    can't return the whole table into the LLM narration step. Assumes
+    `sql` has already passed validate_sql.
+    """
+    try:
+        tree = sqlglot.parse_one(sql, dialect="duckdb")
+    except sqlglot.errors.ParseError:
+        return sql
+
+    if isinstance(tree, exp.Select) and not tree.args.get("limit"):
+        tree = tree.limit(max_rows)
+        return tree.sql(dialect="duckdb") + ";"
+
+    return sql
 
 
 def sanitize_sql(sql: str) -> str:
     """
     Clean up SQL for execution. Removes comments, trims whitespace,
     ensures single semicolon termination.
-
-    Args:
-        sql: Raw SQL string.
-
-    Returns:
-        Sanitized SQL string.
     """
-    # Remove SQL comments
     sql = re.sub(r"--.*$", "", sql, flags=re.MULTILINE)
     sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
-
-    # Trim and normalize whitespace
     sql = " ".join(sql.split())
-
-    # Ensure single semicolon at end
     sql = sql.rstrip(";").strip() + ";"
-
     return sql

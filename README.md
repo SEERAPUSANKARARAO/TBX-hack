@@ -1,0 +1,88 @@
+# FinQuery AI — Bank Transaction Assistant
+
+A conversational assistant that answers plain-English questions about bank transaction data (spend, balances, reconciliation) with every number grounded in a real SQL query result — never invented by the model.
+
+Built for the TBX / BVP Tech Catalyst Hackathon — "Build a Finance Assistant That Actually Understands You."
+
+## Why this architecture
+
+The core risk in this problem is a model that produces a plausible-sounding but wrong number. So the LLM is never allowed to do arithmetic: it only (1) translates a question into SQL, and (2) narrates an already-computed result. Every number that reaches the user is verified against the real query result before being shown.
+
+```mermaid
+flowchart TD
+    U[User question] --> ER[Entity Resolver]
+    ER -->|counterparty, bank, dates| PB[Prompt Builder]
+    PB --> LLM1[LLM: SQL Generator]
+    LLM1 --> VAL[SQL Validator\nsqlglot AST]
+    VAL -->|blocks DROP/UPDATE/INSERT,\nraw PII columns, unknown tables| LLM1
+    VAL -->|valid| DB[(DuckDB\nbank / account / transaction)]
+    DB -->|execution error| LLM1
+    DB -->|rows| ANOM[Anomaly Detector\nmu + 2.5 sigma]
+    DB -->|rows| LLM2[LLM: Response Synthesizer]
+    LLM2 --> VERIFY{Numbers in answer\nmatch result?}
+    VERIFY -->|yes| ANSWER[Answer + table + SQL trace]
+    VERIFY -->|no| TEMPLATE[Deterministic template\nfallback]
+    ANOM --> ANSWER
+    TEMPLATE --> ANSWER
+    ANSWER --> UI[Chat UI]
+```
+
+Key decisions this makes concrete:
+
+- **Grounded retrieval & accurate computation**: SQL generation is steered toward pre-aggregated views (`v_counterparty_spend_summary`) instead of ad hoc joins, to avoid join fan-out silently double-counting a sum. All math (`SUM`, `COUNT`, `AVG`) happens in DuckDB, never in the model.
+- **Verifiable answers**: every response pairs the plain-language answer with the backing rows and the exact executed SQL (collapsible "SQL Lineage & Audit Trace" panel in the UI).
+- **Hallucination guardrail, enforced not just prompted**: `core/response_synthesizer.py` extracts every number the LLM states and checks it against the real result set. A mismatch replaces the LLM's prose with a deterministic template — this is a code-level check, not a prompt instruction the model could ignore.
+- **PII is masked by default**: `account_number` and `utr_number` are never selectable raw (blocked by `core/sql_validator.py`'s AST check) and are masked a second time, unconditionally, at the query-execution layer as defense in depth — see `core/query_engine.py`.
+- **No vendor master table in the real schema** — the client's real data (`bank` / `account` / `transaction`) has no clean vendor list, only free-text bank narration (NEFT/IMPS/UPI/FT formats). `core/description_parser.py` extracts a best-effort counterparty name deterministically (never an LLM guess), with an honest confidence level, and always keeps the raw description alongside so nothing is silently guessed.
+- **"Unreconciled" is a labeled proxy, not invented status**: the real schema has no reconciliation table, so `reconciliation_proxy_status` is derived from presence of a reference ID or UTR — the prompt and the report are explicit that this is a heuristic, not a certified accounting status.
+- **Confidence signaling tied to real signals**: the confidence badge reflects actual fuzzy-match quality, retry count, and whether the numeric-grounding check passed — not an arbitrary number.
+
+## Setup
+
+Requires Python 3.11+.
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env   # then fill in an API key for at least one provider below
+python db/init_db.py   # loads sample_data/*.csv into db/financial.duckdb
+python run.py           # starts the API + UI at http://localhost:8000
+```
+
+`run.py` auto-initializes the database on first run if `db/financial.duckdb` doesn't exist yet, so this also works as just `pip install -r requirements.txt && python run.py`.
+
+### LLM provider
+
+Set `LLM_PROVIDER` in `.env` to one of:
+
+| Provider | Env vars needed | Notes |
+|---|---|---|
+| `openrouter` (default) | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | Access to many hosted models; a free-tier model's shared rate limit can be tight under sustained use — see `MODEL_EFFICIENCY_REPORT.md` |
+| `groq` | `GROQ_API_KEY` | Very fast, generous free tier — good fallback for a live demo if the OpenRouter tier throttles |
+| `ollama` | `OLLAMA_BASE_URL` (local) | Zero API cost, runs entirely offline |
+| `openai` | `OPENAI_API_KEY` | Any OpenAI-compatible model |
+
+### Using your own data
+
+Replace `sample_data/bank.csv`, `sample_data/account.csv`, `sample_data/transaction.csv` with a real export matching the schema in `db/schema.sql` (identical column names/types to the client's DDL), then re-run `python db/init_db.py`. It re-derives `transaction_derived` (counterparty/rail extraction) automatically — no manual step needed. The current `sample_data/` is synthetic, generated by `scripts/generate_sample_data.py` to match the real narration formats and scale (~450 transactions; the schema and pipeline are unchanged whether the real data is hundreds or tens of thousands of rows — DuckDB's columnar engine doesn't need re-architecting for that).
+
+## Using it
+
+Visit `http://localhost:8000`. Try the suggested question chips, or ask your own — e.g. "How much did we send to Amazon Retail India this quarter?", "Show unreconciled transactions over 50000", "What's our balance at HDFC Bank?". Ask a follow-up like "and last month?" to see multi-turn context reuse. Try the "unknown counterparty" chip to see the honest refusal path.
+
+## Testing & benchmarking
+
+```bash
+python test_pipeline.py                    # component tests: parser, resolver, validator, engine, + live pipeline
+python test_pipeline.py --component parser  # any single component
+python test_pipeline.py --interactive       # REPL to try questions ad hoc
+
+python benchmark.py --dry-run               # fast structural/guardrail check, no LLM calls
+python benchmark.py                         # full gold-set run against the configured model
+python benchmark.py --with-synthesis        # + the narration step, for full end-to-end cost/latency
+```
+
+`benchmark.py` writes `MODEL_EFFICIENCY_REPORT.md` (measured tokens/cost/latency/accuracy — the model-choice + efficiency write-up) and `benchmark_results.json` (raw per-query data).
+
+## Out of scope (per the problem statement)
+
+Live banking/ERP integration, multi-tenant auth/user roles, and answering every conceivable financial question — the assistant covers spend, balances, and reconciliation-proxy questions over the given schema.
