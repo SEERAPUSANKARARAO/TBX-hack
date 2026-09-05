@@ -333,7 +333,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Grounded/verified indicator — reflects whether the synthesized answer's
     // numbers were verified against the actual query result, or a fallback
     // template had to be substituted because they weren't traceable.
-    if (data.query_result && data.query_result.success && data.query_result.row_count > 0) {
+    if (data.grounding_status !== "not_evaluated" && data.query_result && data.query_result.success && data.query_result.row_count > 0) {
       groundedTag.classList.remove("hidden");
       answerCard.classList.toggle("ungrounded", !data.numbers_grounded);
       if (data.numbers_grounded) {

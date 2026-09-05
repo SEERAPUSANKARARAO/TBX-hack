@@ -116,3 +116,15 @@ python benchmark.py --with-synthesis        # + the narration step, for full end
 ## Out of scope (per the problem statement)
 
 Live banking/ERP integration, multi-tenant auth/user roles, and answering every conceivable financial question — the assistant covers spend, balances, and reconciliation-proxy questions over the given schema.
+
+## Platform analytics
+
+Use the **Platform analytics** tab beside **Chat & analysis**. Switching views preserves the current chat and draft. Restart the Python server after installing this change, then reload the page.
+
+The dashboard includes request volume, input/output tokens, p50/p95 server pipeline latency (including synthesis), outcomes, configured model usage, grounding-check outcomes, and request metadata inspection. Period and model filters apply to live telemetry; the saved offline benchmark is displayed separately.
+
+New non-dry-run requests are persisted in `data/analytics.sqlite3` (override with `FINQUERY_ANALYTICS_DB`). Prompt text, SQL, answers and financial records are not stored. History is not backfilled. The dashboard covers all customer scopes, like the existing demo's unscoped view; the demo gate is not authentication.
+
+Cost and unique-user cards are unavailable pending billing and identity instrumentation. Conversations count session IDs, which currently reset on page load. Token counts are the usage reported by the existing pipeline and may be incomplete on errors; HTTP retries are not SQL repair retries. The endpoint returns at most the latest 10,000 requests in the period, and the UI labels truncated metrics. Numeric checks do not establish semantic correctness.
+
+Run focused tests with `python test_analytics.py`. No additional dependencies or financial database schema changes are required.

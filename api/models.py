@@ -90,6 +90,7 @@ class QueryResponse(BaseModel):
     clarification_needed: str | None = None
     anomalies: list[AnomalyInfo] = []
     confidence: ConfidenceInfo | None = None
+    grounding_status: str = "not_evaluated"
     numbers_grounded: bool = True
     llm_provider: str = ""
     llm_model: str = ""

@@ -22,6 +22,9 @@ import io
 import json
 import csv
 import logging
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -48,6 +51,7 @@ from api.models import (
     HistoryTurn, HistoryResponse, AnomalyInfo, ConfidenceInfo,
 )
 from core.sql_generator import SQLGenerator
+from core import analytics
 from core.query_engine import QueryEngine
 from core.response_synthesizer import synthesize_response
 from core.anomaly_detector import AnomalyDetector
@@ -191,8 +195,50 @@ def _build_resolved_entities_response(resolved_entities: dict) -> dict:
     return out
 
 
+@app.get("/api/analytics")
+async def analytics_data(days: int = 7):
+    if days not in (1, 7, 30, 90):
+        raise HTTPException(status_code=422, detail="days must be 1, 7, 30 or 90")
+    try:
+        return analytics.read(days)
+    except Exception:
+        logger.exception("Analytics read failed")
+        raise HTTPException(status_code=503, detail="Analytics storage unavailable")
+
+
 @app.post("/api/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
+    started = time.perf_counter()
+    event = dict(id=str(uuid.uuid4()), timestamp=datetime.now(timezone.utc).isoformat(),
+                 session_id=request.session_id, model=_get_llm_model(), outcome="technical_failure",
+                 duration_ms=0, database_ms=None, input_tokens=None, output_tokens=None,
+                 retries=0, grounding="not_evaluated")
+    try:
+        response = await _execute_query(request)
+        qr = response.query_result
+        event.update(input_tokens=response.prompt_tokens, output_tokens=response.completion_tokens,
+                     retries=response.retries, grounding=response.grounding_status)
+        if response.direct_response_kind:
+            event.update(outcome=response.direct_response_kind, model="No model call")
+        elif response.clarification_needed:
+            event["outcome"] = "clarification"
+        elif qr and qr.success:
+            event["outcome"] = "answered" if qr.row_count else "no_matching_data"
+        if qr:
+            event["database_ms"] = qr.execution_time_ms
+        response.total_time_ms = (time.perf_counter() - started) * 1000
+        return response
+    finally:
+        event["duration_ms"] = (time.perf_counter() - started) * 1000
+        if not request.dry_run:
+            try:
+                analytics.record(event)
+            except Exception:
+                # Observability must never break the customer's answer.
+                logger.exception("Analytics write failed")
+
+
+async def _execute_query(request: QueryRequest):
     """
     Submit a natural language question about bank transaction data.
 
@@ -312,6 +358,7 @@ async def query(request: QueryRequest):
                     entity_id=request.entity_id,
                 )
                 response.answer = answer
+                response.grounding_status = "passed" if numbers_grounded else "fallback"
                 response.prompt_tokens += synth_usage.get("prompt_tokens", 0)
                 response.completion_tokens += synth_usage.get("completion_tokens", 0)
             except Exception as e:
