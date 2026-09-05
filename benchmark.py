@@ -30,7 +30,7 @@ PROJECT_ROOT = Path(__file__).parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config import (
-    DUCKDB_PATH, LLM_PROVIDER,
+    LLM_PROVIDER, DB_HOST, DB_PORT, DB_NAME,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_BASE_URL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
     OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEY, GROQ_MODEL,
@@ -122,7 +122,7 @@ def run_benchmark(dry_run: bool = False, with_synthesis: bool = False):
     print("=" * 80)
     print(f"Mode: {'DRY-RUN (Component & Guardrail Validation)' if dry_run else 'LIVE LLM PIPELINE'}"
           f"{' + synthesis' if with_synthesis and not dry_run else ''}")
-    print(f"Database: {DUCKDB_PATH}")
+    print(f"Database: MySQL {DB_HOST}:{DB_PORT}/{DB_NAME}")
     active_model = {
         "openrouter": OPENROUTER_MODEL, "ollama": OLLAMA_MODEL,
         "openai": OPENAI_MODEL, "groq": GROQ_MODEL,
@@ -131,13 +131,13 @@ def run_benchmark(dry_run: bool = False, with_synthesis: bool = False):
     print("-" * 80)
 
     generator = SQLGenerator(
-        db_path=DUCKDB_PATH, llm_provider=LLM_PROVIDER, llm_model=active_model,
+        llm_provider=LLM_PROVIDER, llm_model=active_model,
         ollama_base_url=OLLAMA_BASE_URL, openrouter_api_key=OPENROUTER_API_KEY,
         openrouter_base_url=OPENROUTER_BASE_URL, openai_api_key=OPENAI_API_KEY,
         groq_api_key=GROQ_API_KEY, max_retries=MAX_SQL_RETRIES,
         fuzzy_threshold=FUZZY_MATCH_THRESHOLD,
     )
-    reference_date = get_reference_date(DUCKDB_PATH)
+    reference_date = get_reference_date()
     print(f"Reference date (data's own max, not wall-clock): {reference_date}")
     print("-" * 80)
 
@@ -328,10 +328,11 @@ def _write_report(results, provider, model, with_synthesis):
     lines.append("- **PII masking**: `account_number` / `utr_number` cannot be selected raw — blocked at SQL "
                  "validation time, and masked again defensively at the query-execution layer even if that were "
                  "ever bypassed (see `core/sql_validator.py`, `core/query_engine.py`).")
-    lines.append("- **Read-only execution**: the DuckDB connection used for query execution is opened read-only, "
-                 "independent of the SQL-statement-type guardrail.")
+    lines.append("- **Read-only execution**: query execution always connects as a dedicated MySQL user with "
+                 "SELECT-only grants (`finquery_ro`) — a real database-level guarantee, independent of the "
+                 "SQL-statement-type guardrail (see `core/db_connection.py`).")
     lines.append("- **Execution-time auto-repair**: a syntactically valid query that fails at execution "
-                 "(e.g. wrong column) is fed back to the model with the real DuckDB error and retried, not just "
+                 "(e.g. wrong column) is fed back to the model with the real MySQL error and retried, not just "
                  "pre-execution validation failures.")
     lines.append("- **Pre-aggregated views**: counterparty spend questions are steered toward "
                  "`v_counterparty_spend_summary` rather than ad hoc joins over raw tables, to avoid join fan-out "

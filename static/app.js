@@ -46,9 +46,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const schemaModalContent = document.getElementById("schema-modal-content");
   const dbStatusText = document.getElementById("db-status-text");
   const activeModelText = document.getElementById("active-model-text");
+  const entitySelect = document.getElementById("entity-select");
 
   // Initial Health Check
   fetchHealth();
+  fetchEntities();
 
   // Prompt Chips
   document.querySelectorAll(".prompt-chip").forEach((chip) => {
@@ -84,6 +86,7 @@ document.addEventListener("DOMContentLoaded", () => {
           query: query,
           session_id: sessionId,
           dry_run: dryRun,
+          entity_id: entitySelect.value || null,
         }),
       });
 
@@ -405,11 +408,31 @@ document.addEventListener("DOMContentLoaded", () => {
       const resp = await fetch("/api/health");
       const data = await resp.json();
       if (data.status === "ok") {
-        dbStatusText.textContent = `DuckDB: ${data.total_rows} Rows (${data.tables} Tables)`;
+        dbStatusText.textContent = `MySQL: ${data.total_rows} Rows (${data.tables} Tables)`;
         activeModelText.textContent = data.llm_model || data.llm_provider;
       }
     } catch (e) {
       dbStatusText.textContent = "DB Status: Offline";
+    }
+  }
+
+  // Fetch Entities — populates the "Customer" dropdown. No login in this
+  // build (see README), so this is how a demo user picks which customer's
+  // data to scope questions to; it's a usability convenience, not auth.
+  async function fetchEntities() {
+    try {
+      const resp = await fetch("/api/entities");
+      const data = await resp.json();
+      (data.entities || []).forEach((e) => {
+        const opt = document.createElement("option");
+        opt.value = e.entity_id;
+        const shortId = e.entity_id.substring(0, 8);
+        const acctLabel = e.account_count === 1 ? "1 account" : `${e.account_count} accounts`;
+        opt.textContent = `${shortId}… — ${acctLabel} (${e.banks})`;
+        entitySelect.appendChild(opt);
+      });
+    } catch (e) {
+      // Non-fatal — the app still works fully unscoped without this.
     }
   }
 

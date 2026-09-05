@@ -33,11 +33,10 @@ class AnomalyAlert:
 class AnomalyDetector:
     """
     Evaluates transactions against historical per-counterparty statistical
-    baselines in DuckDB to flag high-value anomalies.
+    baselines in MySQL to flag high-value anomalies.
     """
 
-    def __init__(self, db_path: str, z_threshold: float = 2.5):
-        self.db_path = db_path
+    def __init__(self, z_threshold: float = 2.5):
         self.z_threshold = z_threshold
 
     def _load_counterparty_stats(self, engine: QueryEngine) -> dict[str, dict]:
@@ -101,7 +100,7 @@ class AnomalyDetector:
         if amount_idx is None:
             return []
 
-        engine = QueryEngine(self.db_path)
+        engine = QueryEngine()
         stats = self._load_counterparty_stats(engine)
 
         alerts: list[AnomalyAlert] = []

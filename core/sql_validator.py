@@ -17,7 +17,7 @@ VALID_TABLES = {
     "bank", "account", "transaction", "transaction_derived",
     "v_account_enriched", "v_transaction_enriched",
     "v_counterparty_spend_summary", "v_counterparty_lookup",
-    "v_reconciliation_summary",
+    "v_reconciliation_summary", "v_entity_lookup",
 }
 
 # Raw sensitive columns on the base tables. Never allowed in generated SQL —
@@ -39,7 +39,7 @@ VALID_COLUMNS = {
     "reconciliation_proxy_status", "txn_year", "txn_month", "txn_quarter",
     "txn_day_of_week", "total_spend", "avg_transaction", "min_transaction",
     "max_transaction", "transaction_count", "mention_count", "record_count",
-    "total_amount",
+    "total_amount", "account_count", "bank_count", "banks",
 }
 
 BLOCKED_STATEMENT_TYPES = {
@@ -114,7 +114,7 @@ def validate_sql(sql: str) -> ValidationResult:
 
     # ── Step 1: Parse ──
     try:
-        parsed = sqlglot.parse(sql, dialect="duckdb")
+        parsed = sqlglot.parse(sql, dialect="mysql")
     except sqlglot.errors.ParseError as e:
         return ValidationResult(is_valid=False, sql=sql, error=f"SQL syntax error: {str(e)}")
 
@@ -216,13 +216,13 @@ def enforce_row_limit(sql: str, max_rows: int = 1000) -> str:
     `sql` has already passed validate_sql.
     """
     try:
-        tree = sqlglot.parse_one(sql, dialect="duckdb")
+        tree = sqlglot.parse_one(sql, dialect="mysql")
     except sqlglot.errors.ParseError:
         return sql
 
     if isinstance(tree, exp.Select) and not tree.args.get("limit"):
         tree = tree.limit(max_rows)
-        return tree.sql(dialect="duckdb") + ";"
+        return tree.sql(dialect="mysql") + ";"
 
     return sql
 

@@ -26,6 +26,11 @@ class QueryRequest(BaseModel):
         default=False,
         description="If true, skip LLM call and return assembled prompt only",
     )
+    entity_id: str | None = Field(
+        default=None,
+        description="Selected customer entity_id (from the /api/entities dropdown — there is no "
+                    "login in this build). When set, every query is scoped to this entity's accounts.",
+    )
 
 
 class ExportRequest(BaseModel):

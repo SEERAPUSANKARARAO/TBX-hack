@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FinQuery AI — Deterministic Text-to-SQL Bank Transaction Intelligence</title>
-  <meta name="description" content="Zero-hallucination bank transaction analytics powered by DuckDB and lightweight code LLMs. Account numbers and UTRs are masked by default." />
+  <meta name="description" content="Zero-hallucination bank transaction analytics powered by MySQL and lightweight code LLMs. Account numbers and UTRs are masked by default." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -33,7 +33,7 @@
         </div>
         <div class="status-indicator">
           <span class="status-dot"></span>
-          <span id="db-status-text">DuckDB: — Rows</span>
+          <span id="db-status-text">MySQL: — Rows</span>
         </div>
         <div class="model-badge">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 14h-2v-4h2zm0-6h-2V8h2z"/></svg>
@@ -58,6 +58,17 @@
           <span class="session-tag" id="session-badge">Session: default</span>
         </div>
 
+        <!-- Entity Selector — stand-in for login (there is no auth in this build) -->
+        <div class="entity-selector-bar">
+          <label for="entity-select" class="entity-select-label" title="No login in this build — pick which customer's data to explore">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            Customer
+          </label>
+          <select id="entity-select">
+            <option value="">All customers (unscoped)</option>
+          </select>
+        </div>
+
         <!-- Quick Prompt Chips -->
         <div class="prompt-chips-container">
           <span class="chips-title">Suggested Inquiries:</span>
@@ -79,7 +90,7 @@
             <div class="bot-avatar">FQ</div>
             <div class="message-content">
               <p><strong>Welcome to FinQuery AI!</strong></p>
-              <p>Ask any question in plain English about bank transactions, balances, counterparties, or reconciliation. Every number is deterministically computed in <strong>DuckDB</strong> and verified against the result before you see it — account numbers and UTRs are always masked.</p>
+              <p>Ask any question in plain English about bank transactions, balances, counterparties, or reconciliation. Every number is deterministically computed in <strong>MySQL</strong> and verified against the result before you see it — account numbers and UTRs are always masked.</p>
             </div>
           </div>
         </div>
@@ -222,7 +233,7 @@
         <div class="modal-header">
           <div class="modal-title-group">
             <h3>Database Schema Explorer</h3>
-            <p>Analytical Views & Tables in DuckDB</p>
+            <p>Analytical Views & Tables in MySQL</p>
           </div>
           <button id="btn-close-modal" class="btn-icon">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>

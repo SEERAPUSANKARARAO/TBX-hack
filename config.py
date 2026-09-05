@@ -13,7 +13,20 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).parent.resolve()
 DB_DIR = PROJECT_ROOT / "db"
 SAMPLE_DATA_DIR = PROJECT_ROOT / "sample_data"
-DUCKDB_PATH = os.getenv("DUCKDB_PATH", str(DB_DIR / "financial.duckdb"))
+
+# ── Database (MySQL) — the single place connection details live.
+# Change these (or the env vars behind them) and every component picks it up;
+# nothing else in the app hardcodes a connection. ──
+DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
+DB_NAME = os.getenv("DB_NAME", "finquery")
+# Full-privilege user — schema/data setup only (db/init_db.py).
+DB_ADMIN_USER = os.getenv("DB_ADMIN_USER", "finquery_app")
+DB_ADMIN_PASSWORD = os.getenv("DB_ADMIN_PASSWORD", "")
+# SELECT-only user — the actual query-execution runtime. A real database-level
+# read-only guarantee, not just an application-level check.
+DB_READONLY_USER = os.getenv("DB_READONLY_USER", "finquery_ro")
+DB_READONLY_PASSWORD = os.getenv("DB_READONLY_PASSWORD", "")
 
 # ── LLM Settings ──
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")

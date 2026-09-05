@@ -1,37 +1,43 @@
 -- ============================================================
--- Financial AI Chatbot – DuckDB Schema Definition
+-- Financial AI Chatbot – MySQL Schema Definition
 -- ============================================================
--- Base tables (bank / account / transaction) match the TBX client's
--- DDL exactly — do not add or rename columns here. Everything derived
--- (counterparty extraction, masking, reconciliation proxy) lives in
--- `transaction_derived` and the views below, so the raw client tables
--- stay pristine and swappable with a real export.
+-- Base tables (bank / account / transaction) are the TBX client's DDL
+-- verbatim — same column names, types, ENGINE/CHARSET. Do not add or
+-- rename columns here. Everything derived (counterparty extraction,
+-- masking, reconciliation proxy) lives in `transaction_derived` and the
+-- views below, so the client tables stay pristine and swappable with a
+-- real export.
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS bank (
     bank_code    VARCHAR(10)  PRIMARY KEY,
     bank_name    VARCHAR(150) NOT NULL
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS account (
-    account_id         VARCHAR(36)   PRIMARY KEY,
-    entity_id          VARCHAR(36)   NOT NULL,
-    account_number     VARCHAR(20)   NOT NULL,   -- SENSITIVE: never SELECT raw, use v_account_enriched.masked_account_number
-    program_id         INTEGER       NOT NULL,
+    account_id         VARCHAR(36)  PRIMARY KEY,
+    entity_id          VARCHAR(36)  NOT NULL,
+    account_number     VARCHAR(20)  NOT NULL,   -- SENSITIVE: never SELECT raw, use v_account_enriched.masked_account_number
+    program_id         INT          NOT NULL,
     available_balance  DECIMAL(15,2) NOT NULL DEFAULT 0.00,
-    bank_code          VARCHAR(10)   NOT NULL REFERENCES bank(bank_code)
-);
+    bank_code          VARCHAR(10)  NOT NULL,
+    INDEX idx_account_entity_id (entity_id),
+    FOREIGN KEY (bank_code) REFERENCES bank(bank_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS transaction (
-    transaction_id           VARCHAR(36)   PRIMARY KEY,
-    account_id               VARCHAR(36)   NOT NULL REFERENCES account(account_id),
-    transaction_date         TIMESTAMP     NOT NULL,
-    transaction_type         VARCHAR(10)   NOT NULL CHECK (transaction_type IN ('credit', 'debit')),
-    description              VARCHAR(500),
+    transaction_id           VARCHAR(36)  PRIMARY KEY,
+    account_id               VARCHAR(36)  NOT NULL,
+    transaction_date         TIMESTAMP(6) NOT NULL,
+    transaction_type         ENUM('credit','debit') NOT NULL,
+    description              VARCHAR(500) DEFAULT NULL,
     transaction_amount       DECIMAL(15,2) NOT NULL DEFAULT 0.00,
-    transaction_reference_id VARCHAR(64),          -- plaintext, directly searchable
-    utr_number               VARCHAR(256)          -- SENSITIVE: never SELECT raw, use v_transaction_enriched.masked_utr_token
-);
+    transaction_reference_id VARCHAR(64)  DEFAULT NULL,
+    utr_number               VARCHAR(256) DEFAULT NULL,
+    INDEX idx_txn_account_id (account_id),
+    INDEX idx_txn_date (transaction_date),
+    FOREIGN KEY (account_id) REFERENCES account(account_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================
 -- DERIVED TABLE — populated once by db/init_db.py via
@@ -40,11 +46,12 @@ CREATE TABLE IF NOT EXISTS transaction (
 -- never touched.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS transaction_derived (
-    transaction_id         VARCHAR(36) PRIMARY KEY REFERENCES transaction(transaction_id),
-    rail_type              VARCHAR(20),          -- UPI, NEFT, IMPS, FT, RTGS, OTHER
-    counterparty_name      VARCHAR(200),         -- best-effort extraction from description; NULL if not confidently found
-    counterparty_confidence VARCHAR(10)          -- 'high', 'medium', 'low'
-);
+    transaction_id          VARCHAR(36) PRIMARY KEY,
+    rail_type               VARCHAR(20),          -- UPI, NEFT, IMPS, FT, RTGS, OTHER
+    counterparty_name       VARCHAR(200),         -- best-effort extraction from description; NULL if not confidently found
+    counterparty_confidence VARCHAR(10),          -- 'high', 'medium', 'low'
+    FOREIGN KEY (transaction_id) REFERENCES transaction(transaction_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================
 -- VIEWS
@@ -56,7 +63,7 @@ CREATE OR REPLACE VIEW v_account_enriched AS
 SELECT
     a.account_id,
     a.entity_id,
-    '******' || RIGHT(a.account_number, 4) AS masked_account_number,
+    CONCAT('******', RIGHT(a.account_number, 4)) AS masked_account_number,
     a.program_id,
     a.available_balance,
     a.bank_code,
@@ -77,7 +84,7 @@ SELECT
     t.transaction_amount,
     t.transaction_reference_id,
     CASE WHEN t.utr_number IS NOT NULL AND t.utr_number != ''
-         THEN 'UTR-' || SUBSTR(MD5(t.utr_number), 1, 6)
+         THEN CONCAT('UTR-', SUBSTRING(MD5(t.utr_number), 1, 6))
          ELSE NULL END AS masked_utr_token,
     (t.transaction_reference_id IS NOT NULL AND t.transaction_reference_id != '') AS has_reference,
     (t.utr_number IS NOT NULL AND t.utr_number != '') AS has_utr,
@@ -88,7 +95,7 @@ SELECT
     d.counterparty_name,
     d.counterparty_confidence,
     a.entity_id,
-    '******' || RIGHT(a.account_number, 4) AS masked_account_number,
+    CONCAT('******', RIGHT(a.account_number, 4)) AS masked_account_number,
     a.program_id,
     a.bank_code,
     b.bank_name,
@@ -109,6 +116,7 @@ CREATE OR REPLACE VIEW v_counterparty_spend_summary AS
 SELECT
     counterparty_name,
     rail_type,
+    entity_id,
     txn_year,
     txn_month,
     COUNT(*)               AS transaction_count,
@@ -120,7 +128,7 @@ FROM v_transaction_enriched
 WHERE transaction_type = 'debit'
   AND counterparty_name IS NOT NULL
   AND counterparty_confidence != 'low'
-GROUP BY counterparty_name, rail_type, txn_year, txn_month;
+GROUP BY counterparty_name, rail_type, entity_id, txn_year, txn_month;
 
 -- Lookup of distinct extracted counterparty names — feeds the entity
 -- resolver's fuzzy-match index (replaces a vendor_list table, which
@@ -145,3 +153,15 @@ SELECT
     SUM(transaction_amount)     AS total_amount
 FROM v_transaction_enriched
 GROUP BY reconciliation_proxy_status;
+
+-- One row per customer entity, with account/bank counts — feeds the
+-- entity-selector dropdown (there is no login/auth in this build, so this
+-- is the stand-in for "which customer am I looking at").
+CREATE OR REPLACE VIEW v_entity_lookup AS
+SELECT
+    entity_id,
+    COUNT(DISTINCT account_id) AS account_count,
+    COUNT(DISTINCT bank_code)  AS bank_count,
+    GROUP_CONCAT(DISTINCT bank_code ORDER BY bank_code SEPARATOR ', ') AS banks
+FROM account
+GROUP BY entity_id;

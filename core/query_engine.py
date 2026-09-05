@@ -1,14 +1,17 @@
 """
-Query Engine — DuckDB Execution Layer
+Query Engine — MySQL Execution Layer
 ======================================
-Executes validated SQL against DuckDB and returns structured results.
-Handles error reporting, empty results, and execution timing.
+Executes validated SQL against MySQL and returns structured results.
+Always connects as the SELECT-only `finquery_ro` user (see
+core/db_connection.py) — a real database-level read-only guarantee,
+independent of the SQL-validator's SELECT-only check.
 """
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
-import duckdb
+import pymysql
+
+from core.db_connection import get_connection
 
 # Defense-in-depth: even if the SQL validator's PII guard were ever bypassed,
 # a value returned under one of these column names is masked here before it
@@ -19,7 +22,7 @@ SENSITIVE_COLUMNS = {"account_number", "utr_number"}
 
 @dataclass
 class QueryResult:
-    """Structured result from a DuckDB query execution."""
+    """Structured result from a MySQL query execution."""
     success: bool
     columns: list[str] = field(default_factory=list)
     rows: list[list] = field(default_factory=list)
@@ -52,18 +55,16 @@ class QueryResult:
         if self.row_count == 0:
             return "Query returned no results."
 
-        # Build a simple text table
         lines = []
         lines.append(f"({self.row_count} row{'s' if self.row_count != 1 else ''}, "
                       f"{self.execution_time_ms:.1f}ms)")
         lines.append("")
 
-        # Column headers
         col_widths = [max(len(str(col)), 8) for col in self.columns]
         for i, col in enumerate(self.columns):
-            for row in self.rows[:20]:  # Sample first 20 rows for width calc
+            for row in self.rows[:20]:
                 col_widths[i] = max(col_widths[i], len(str(row[i])))
-            col_widths[i] = min(col_widths[i], 40)  # Cap width
+            col_widths[i] = min(col_widths[i], 40)
 
         header = " | ".join(
             str(col).ljust(col_widths[i]) for i, col in enumerate(self.columns)
@@ -71,7 +72,6 @@ class QueryResult:
         lines.append(header)
         lines.append("-+-".join("-" * w for w in col_widths))
 
-        # Data rows (limit to 25 for readability)
         display_rows = self.rows[:25]
         for row in display_rows:
             line = " | ".join(
@@ -87,19 +87,18 @@ class QueryResult:
 
 
 def _serialize_value(val):
-    """Convert DuckDB values to JSON-serializable types."""
+    """Convert MySQL values to JSON-serializable types."""
     if val is None:
         return None
     if isinstance(val, (int, float, str, bool)):
         return val
-    # Handle Decimal, date, datetime, etc.
+    # Handle Decimal, date, datetime, timedelta, etc.
     return str(val)
 
 
 def _extract_tables_from_sql(sql: str) -> list[str]:
     """Extract table names referenced in SQL (best-effort)."""
     import re
-    # Match FROM/JOIN followed by table names
     pattern = r'(?:FROM|JOIN)\s+(\w+)'
     matches = re.findall(pattern, sql, re.IGNORECASE)
     return list(set(matches))
@@ -107,31 +106,13 @@ def _extract_tables_from_sql(sql: str) -> list[str]:
 
 class QueryEngine:
     """
-    Executes SQL queries against a DuckDB database.
+    Executes SQL queries against MySQL, always as the read-only user.
 
     Usage:
-        engine = QueryEngine("path/to/financial.duckdb")
-        result = engine.execute("SELECT * FROM transactions LIMIT 5")
+        engine = QueryEngine()
+        result = engine.execute("SELECT * FROM v_transaction_enriched LIMIT 5")
         print(result.summary_text())
     """
-
-    def __init__(self, db_path: str):
-        """
-        Initialize the query engine with a DuckDB database path.
-
-        Args:
-            db_path: Path to the DuckDB database file.
-        """
-        self.db_path = db_path
-        if not Path(db_path).exists():
-            raise FileNotFoundError(
-                f"Database not found: {db_path}. "
-                f"Run 'python db/init_db.py' first."
-            )
-
-    def _get_connection(self) -> duckdb.DuckDBPyConnection:
-        """Create a read-only connection to the database."""
-        return duckdb.connect(self.db_path, read_only=True)
 
     def execute(self, sql: str) -> QueryResult:
         """
@@ -146,11 +127,12 @@ class QueryEngine:
         start_time = time.perf_counter()
 
         try:
-            con = self._get_connection()
+            con = get_connection(readonly=True)
             try:
-                result = con.execute(sql)
-                columns = [desc[0] for desc in result.description]
-                rows = [list(row) for row in result.fetchall()]
+                with con.cursor() as cursor:
+                    cursor.execute(sql)
+                    columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                    rows = [list(row) for row in cursor.fetchall()]
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
 
                 sensitive_idx = [i for i, c in enumerate(columns) if c.lower() in SENSITIVE_COLUMNS]
@@ -171,13 +153,13 @@ class QueryEngine:
             finally:
                 con.close()
 
-        except duckdb.Error as e:
+        except pymysql.Error as e:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
             return QueryResult(
                 success=False,
                 sql=sql,
                 execution_time_ms=elapsed_ms,
-                error=f"DuckDB error: {str(e)}",
+                error=f"MySQL error: {str(e)}",
                 tables_touched=_extract_tables_from_sql(sql),
             )
         except Exception as e:
@@ -197,27 +179,30 @@ class QueryEngine:
         Returns:
             Dict mapping table names to their column info.
         """
-        con = self._get_connection()
+        con = get_connection(readonly=True)
         try:
-            tables = con.execute("""
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = 'main' AND table_type = 'BASE TABLE'
-                ORDER BY table_name
-            """).fetchall()
+            with con.cursor() as cursor:
+                cursor.execute("""
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
+                    ORDER BY table_name
+                """)
+                tables = cursor.fetchall()
 
-            info = {}
-            for (table_name,) in tables:
-                columns = con.execute("""
-                    SELECT column_name, data_type, is_nullable
-                    FROM information_schema.columns
-                    WHERE table_name = ?
-                    ORDER BY ordinal_position
-                """, [table_name]).fetchall()
-                info[table_name] = [
-                    {"name": col, "type": dtype, "nullable": nullable}
-                    for col, dtype, nullable in columns
-                ]
-            return info
+                info = {}
+                for (table_name,) in tables:
+                    cursor.execute("""
+                        SELECT column_name, data_type, is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = DATABASE() AND table_name = %s
+                        ORDER BY ordinal_position
+                    """, [table_name])
+                    columns = cursor.fetchall()
+                    info[table_name] = [
+                        {"name": col, "type": dtype, "nullable": nullable}
+                        for col, dtype, nullable in columns
+                    ]
+                return info
         finally:
             con.close()

@@ -1,4 +1,5 @@
-duckdb
+pymysql
+cryptography
 fastapi
 uvicorn[standard]
 python-dotenv

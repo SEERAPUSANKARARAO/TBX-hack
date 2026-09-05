@@ -2,7 +2,7 @@
 Few-Shot Examples for SQL Generation
 =====================================
 Targeted examples that teach the LLM how to translate bank-transaction
-questions into correct DuckDB SQL against the bank/account/transaction
+questions into correct MySQL SQL against the bank/account/transaction
 schema — including a multi-turn follow-up example, since reusing prior
 filters correctly is a named must-have, not just a nice-to-have.
 """
@@ -17,11 +17,11 @@ FEW_SHOT_EXAMPLES = [
     SUM(total_spend) AS total_spend,
     SUM(transaction_count) AS transaction_count
 FROM v_counterparty_spend_summary
-WHERE counterparty_name ILIKE '%amazon retail india%'
+WHERE counterparty_name LIKE '%amazon retail india%'
   AND txn_year = YEAR(DATE '2026-09-05')
   AND txn_month IN (7, 8, 9)
 GROUP BY counterparty_name;""",
-        "explanation": "Uses the pre-aggregated view (avoids re-summing raw rows / fan-out) and ILIKE for partial, case-insensitive counterparty matching."
+        "explanation": "Uses the pre-aggregated view (avoids re-summing raw rows / fan-out) and LIKE for partial, case-insensitive counterparty matching."
     },
 
     # ── Example 2: Account balance ──
@@ -32,7 +32,7 @@ GROUP BY counterparty_name;""",
     bank_name,
     available_balance
 FROM v_account_enriched
-WHERE bank_name ILIKE '%hdfc%'
+WHERE bank_name LIKE '%hdfc%'
 ORDER BY available_balance DESC;""",
         "explanation": "Reads from v_account_enriched, never the raw account table — account_number is already masked there."
     },
@@ -78,14 +78,14 @@ ORDER BY bank_name, transaction_type;""",
         "sql": """-- Turn 1
 SELECT counterparty_name, SUM(total_spend) AS total_spend, SUM(transaction_count) AS transaction_count
 FROM v_counterparty_spend_summary
-WHERE counterparty_name ILIKE '%bharti airtel limited%'
+WHERE counterparty_name LIKE '%bharti airtel limited%'
   AND txn_year = 2026 AND txn_month = 8
 GROUP BY counterparty_name;
 
 -- Turn 2 (follow-up: same counterparty filter, only the month changes)
 SELECT counterparty_name, SUM(total_spend) AS total_spend, SUM(transaction_count) AS transaction_count
 FROM v_counterparty_spend_summary
-WHERE counterparty_name ILIKE '%bharti airtel limited%'
+WHERE counterparty_name LIKE '%bharti airtel limited%'
   AND txn_year = 2026 AND txn_month = 9
 GROUP BY counterparty_name;""",
         "explanation": "On a follow-up question, keep every filter from the previous turn (counterparty, direction, table) and change only what the follow-up explicitly asks to change — here, just the month."
@@ -100,7 +100,7 @@ GROUP BY counterparty_name;""",
     transaction_amount,
     description
 FROM v_transaction_enriched
-WHERE counterparty_name ILIKE '%selection electronics%'
+WHERE counterparty_name LIKE '%selection electronics%'
   AND transaction_type = 'debit'
 ORDER BY transaction_amount DESC
 LIMIT 5;""",

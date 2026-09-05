@@ -3,6 +3,8 @@ FastAPI Application — Financial AI Chatbot Backend
 ===================================================
 REST API exposing the Text-to-SQL pipeline with endpoints for
 querying, schema inspection, CSV export, and session management.
+Database is MySQL — see core/db_connection.py for the single place
+connection details live.
 
 Endpoints:
     POST /api/query          — Submit a natural language question
@@ -12,6 +14,7 @@ Endpoints:
     POST /api/export         — Export query results as CSV
     DELETE /api/history      — Clear conversation history
     GET  /api/counterparties — List extracted counterparty names
+    GET  /api/entities       — List customer entity_ids (dropdown; no login in this build)
 """
 import sys
 import io
@@ -29,12 +32,13 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config import (
-    DUCKDB_PATH, LLM_PROVIDER,
+    LLM_PROVIDER,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_BASE_URL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
     OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEY, GROQ_MODEL,
     MAX_SQL_RETRIES, FUZZY_MATCH_THRESHOLD, LLM_TEMPERATURE,
     LLM_MAX_TOKENS, APP_HOST, APP_PORT,
+    DB_HOST, DB_PORT, DB_NAME,
 )
 from api.models import (
     QueryRequest, QueryResponse, QueryResultData,
@@ -66,7 +70,6 @@ def _get_generator(session_id: str = "default") -> SQLGenerator:
     """Get or create a SQLGenerator for the given session."""
     if session_id not in _sessions:
         _sessions[session_id] = SQLGenerator(
-            db_path=DUCKDB_PATH,
             llm_provider=LLM_PROVIDER,
             llm_model=_get_llm_model(),
             ollama_base_url=OLLAMA_BASE_URL,
@@ -85,11 +88,13 @@ def _get_generator(session_id: str = "default") -> SQLGenerator:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Financial AI Chatbot API...")
-    logger.info("Database: %s", DUCKDB_PATH)
+    logger.info("Database: MySQL %s:%s/%s", DB_HOST, DB_PORT, DB_NAME)
     logger.info("LLM Provider: %s, Model: %s", LLM_PROVIDER, _get_llm_model())
 
-    if not Path(DUCKDB_PATH).exists():
-        logger.error("Database not found: %s. Run 'python db/init_db.py' first.", DUCKDB_PATH)
+    try:
+        QueryEngine().execute("SELECT 1")
+    except Exception as e:
+        logger.error("Database not reachable at startup: %s. Run 'python db/init_db.py' first.", e)
 
     yield
 
@@ -99,11 +104,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Financial AI Chatbot",
-    description="Deterministic Text-to-SQL engine for bank transaction data. "
+    description="Deterministic Text-to-SQL engine for bank transaction data, backed by MySQL. "
                 "Ask questions in plain English and get precise, auditable answers "
-                "backed by SQL execution against DuckDB. Account numbers and UTRs "
+                "backed by SQL execution. Account numbers and UTRs "
                 "are masked by default — never returned raw.",
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -147,20 +152,23 @@ async def query(request: QueryRequest):
     The pipeline will:
     1. Resolve entities (counterparty, dates) from your query
     2. Generate SQL using the LLM
-    3. Validate SQL (read-only, correct tables, no raw PII columns)
-    4. Execute against DuckDB
+    3. Validate SQL (read-only, correct tables, no raw PII columns, entity_id-scoped if selected)
+    4. Execute against MySQL
     5. Synthesize a natural language answer, verified against the result
 
     Multi-turn: Use the same session_id for follow-up questions.
+    entity_id: optional — scopes the query to one customer (see /api/entities).
+    There is no login in this build, so this is a usability scope, not a security boundary.
     """
     generator = _get_generator(request.session_id)
-    reference_date = get_reference_date(DUCKDB_PATH)
+    reference_date = get_reference_date()
 
     try:
         result = generator.generate(
             user_query=request.query,
             reference_date=reference_date,
             dry_run=request.dry_run,
+            entity_id=request.entity_id,
         )
     except Exception as e:
         logger.exception("Pipeline error")
@@ -198,7 +206,7 @@ async def query(request: QueryRequest):
 
         if result.query_result.success and not request.dry_run:
             try:
-                detector = AnomalyDetector(DUCKDB_PATH)
+                detector = AnomalyDetector()
                 anom_alerts = detector.detect_anomalies(
                     query_columns=result.query_result.columns,
                     query_rows=result.query_result.rows,
@@ -277,11 +285,11 @@ async def query(request: QueryRequest):
 async def health():
     """Health check — verifies database connectivity and returns stats."""
     try:
-        engine = QueryEngine(DUCKDB_PATH)
+        engine = QueryEngine()
 
         table_result = engine.execute("""
             SELECT COUNT(*) AS cnt FROM information_schema.tables
-            WHERE table_schema = 'main' AND table_type = 'BASE TABLE'
+            WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
         """)
         table_count = table_result.rows[0][0] if table_result.success else 0
 
@@ -314,7 +322,7 @@ async def health():
 async def schema():
     """Get database schema information — tables, columns, and row counts."""
     try:
-        engine = QueryEngine(DUCKDB_PATH)
+        engine = QueryEngine()
         table_info = engine.get_table_info()
 
         tables = []
@@ -332,9 +340,8 @@ async def schema():
             ))
 
         view_result = engine.execute("""
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'main' AND table_type = 'VIEW'
-            ORDER BY table_name
+            SELECT table_name FROM information_schema.views
+            WHERE table_schema = DATABASE() ORDER BY table_name
         """)
         views = [row[0] for row in view_result.rows] if view_result.success else []
 
@@ -373,7 +380,7 @@ async def export_csv(request: ExportRequest):
         raise HTTPException(status_code=400, detail=f"SQL validation failed: {validation.error}")
 
     try:
-        engine = QueryEngine(DUCKDB_PATH)
+        engine = QueryEngine()
         result = engine.execute(request.sql)
 
         if not result.success:
@@ -405,7 +412,7 @@ async def list_counterparties():
     client schema; these names come from core/description_parser.py.
     """
     try:
-        engine = QueryEngine(DUCKDB_PATH)
+        engine = QueryEngine()
         result = engine.execute("""
             SELECT counterparty_name, rail_type, mention_count
             FROM v_counterparty_lookup
@@ -419,6 +426,36 @@ async def list_counterparties():
                 ]
             }
         raise HTTPException(status_code=500, detail="Failed to fetch counterparties")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/entities")
+async def list_entities():
+    """
+    List customer entity_ids with their account/bank counts — feeds the
+    entity-selector dropdown. There is no login/auth in this build (out of
+    scope per the problem statement), so this is how a demo user picks
+    "which customer am I looking at" — a usability convenience, not an
+    access-control mechanism.
+    """
+    try:
+        engine = QueryEngine()
+        result = engine.execute("""
+            SELECT entity_id, account_count, bank_count, banks
+            FROM v_entity_lookup
+            ORDER BY account_count DESC, entity_id
+        """)
+        if result.success:
+            return {
+                "entities": [
+                    {"entity_id": row[0], "account_count": row[1], "bank_count": row[2], "banks": row[3]}
+                    for row in result.rows
+                ]
+            }
+        raise HTTPException(status_code=500, detail="Failed to fetch entities")
     except HTTPException:
         raise
     except Exception as e:

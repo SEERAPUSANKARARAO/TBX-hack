@@ -265,6 +265,42 @@ body {
   border-radius: var(--radius-sm);
 }
 
+/* Entity Selector */
+.entity-selector-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(139, 92, 246, 0.05);
+}
+
+.entity-select-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent-purple);
+  white-space: nowrap;
+}
+
+#entity-select {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+}
+
+#entity-select:focus {
+  outline: none;
+  border-color: var(--accent-purple);
+}
+
 /* Chips */
 .prompt-chips-container {
   padding: 10px 18px;

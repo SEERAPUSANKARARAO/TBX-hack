@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config import (
-    DUCKDB_PATH, LLM_PROVIDER,
+    LLM_PROVIDER, DB_HOST, DB_PORT, DB_NAME,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_BASE_URL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
     OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEY, GROQ_MODEL,
@@ -79,9 +79,9 @@ def test_entity_resolver():
     print("TEST: Entity Resolver")
     print(DIVIDER)
 
-    resolver = EntityResolver(DUCKDB_PATH, FUZZY_MATCH_THRESHOLD)
+    resolver = EntityResolver(FUZZY_MATCH_THRESHOLD)
     print(f"  Loaded {len(resolver.counterparties)} counterparties from database\n")
-    reference_date = get_reference_date(DUCKDB_PATH)
+    reference_date = get_reference_date()
 
     test_cases = [
         ("How much did we send to Amazon Retail India?", "Should match Amazon Retail India"),
@@ -189,10 +189,10 @@ def test_query_engine():
     from core.query_engine import QueryEngine
 
     print(f"\n{DIVIDER}")
-    print("TEST: Query Engine (DuckDB)")
+    print("TEST: Query Engine (MySQL)")
     print(DIVIDER)
 
-    engine = QueryEngine(DUCKDB_PATH)
+    engine = QueryEngine()
 
     test_queries = [
         ("SELECT COUNT(*) AS total FROM transaction;", "Count transactions"),
@@ -210,7 +210,7 @@ def test_query_engine():
         ),
         (
             "SELECT * FROM v_counterparty_spend_summary "
-            "WHERE counterparty_name ILIKE '%amazon%' ORDER BY txn_year, txn_month;",
+            "WHERE counterparty_name LIKE '%amazon%' ORDER BY txn_year, txn_month;",
             "Amazon monthly spend (using view)"
         ),
     ]
@@ -244,7 +244,7 @@ def _build_generator():
     }.get(LLM_PROVIDER, OPENROUTER_MODEL)
 
     return SQLGenerator(
-        db_path=DUCKDB_PATH, llm_provider=LLM_PROVIDER, llm_model=model,
+        llm_provider=LLM_PROVIDER, llm_model=model,
         ollama_base_url=OLLAMA_BASE_URL, openrouter_api_key=OPENROUTER_API_KEY,
         openrouter_base_url=OPENROUTER_BASE_URL, openai_api_key=OPENAI_API_KEY,
         groq_api_key=GROQ_API_KEY, max_retries=MAX_SQL_RETRIES,
@@ -260,7 +260,7 @@ def test_full_pipeline(dry_run: bool = False):
     print(DIVIDER)
 
     generator, model = _build_generator()
-    reference_date = get_reference_date(DUCKDB_PATH)
+    reference_date = get_reference_date()
     print(f"  Reference date (data max, not wall-clock): {reference_date}\n")
 
     for i, query in enumerate(TEST_QUERIES, 1):
@@ -294,7 +294,7 @@ def test_full_pipeline(dry_run: bool = False):
 def interactive_mode(dry_run: bool = False):
     """Interactive query mode — type questions and get SQL + results."""
     generator, model = _build_generator()
-    reference_date = get_reference_date(DUCKDB_PATH)
+    reference_date = get_reference_date()
 
     print(f"\n{DIVIDER}")
     print("Financial AI Chatbot — Interactive Mode")
@@ -355,7 +355,7 @@ def main():
 
     print(f"\n{DIVIDER}")
     print("Financial AI Chatbot — Test Suite")
-    print(f"Database: {DUCKDB_PATH}")
+    print(f"Database: MySQL {DB_HOST}:{DB_PORT}/{DB_NAME}")
     print(DIVIDER)
 
     if args.interactive:

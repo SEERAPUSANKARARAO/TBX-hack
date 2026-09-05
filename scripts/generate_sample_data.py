@@ -17,6 +17,7 @@ import random
 import uuid
 import base64
 import os
+from collections import Counter
 from datetime import date, timedelta, datetime
 
 random.seed(42)
@@ -132,24 +133,52 @@ def write_bank_csv():
     print(f"  bank.csv: {len(BANKS)} rows")
 
 
-def write_account_csv(n_accounts=32):
+def write_account_csv(n_accounts=32, n_entities=20):
+    """
+    entity_id is a customer, not an account — a real customer can own
+    several accounts, often at different banks. A handful of "power user"
+    entities are weighted to get 2-4 accounts each (deliberately spread
+    across different bank_codes where possible) so the multi-account,
+    multi-bank case actually shows up in the demo data instead of every
+    entity_id mapping 1:1 to a single account.
+    """
     path = os.path.join(OUT_DIR, "account.csv")
+    entity_ids = [str(uuid.uuid4()) for _ in range(n_entities)]
+    weights = [4 if i < 6 else 1 for i in range(n_entities)]
+    entity_assignments = random.choices(entity_ids, weights=weights, k=n_accounts)
+
+    entity_banks_used: dict[str, set] = {}
     accounts = []
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["account_id", "entity_id", "account_number", "program_id", "available_balance", "bank_code"])
         for i in range(n_accounts):
             account_id = str(uuid.uuid4())
-            entity_id = str(uuid.uuid4())
+            entity_id = entity_assignments[i]
+
+            used_banks = entity_banks_used.setdefault(entity_id, set())
+            unused_banks = [b for b in BANK_CODES if b not in used_banks]
+            # Prefer a bank this entity doesn't already have an account at
+            # (models "multiple accounts across banks"), but still allow the
+            # occasional same-bank second account (also realistic).
+            if unused_banks and random.random() < 0.75:
+                bank_code = random.choice(unused_banks)
+            else:
+                bank_code = random.choice(BANK_CODES)
+            used_banks.add(bank_code)
+
             account_number = rand_digits(random.choice([14, 16]))
             program_id = random.choice([21, 4, 46])
             balance = round(random.uniform(5_000, 5_000_000), 2)
             if random.random() < 0.15:
                 balance = -round(random.uniform(5_000, 2_000_000), 2)
-            bank_code = random.choice(BANK_CODES)
             w.writerow([account_id, entity_id, account_number, program_id, balance, bank_code])
             accounts.append(account_id)
-    print(f"  account.csv: {len(accounts)} rows")
+
+    accounts_per_entity = Counter(entity_assignments)
+    multi_account_entities = sum(1 for cnt in accounts_per_entity.values() if cnt > 1)
+    print(f"  account.csv: {len(accounts)} rows across {len(accounts_per_entity)} distinct entities "
+          f"({multi_account_entities} of them own 2+ accounts)")
     return accounts
 
 

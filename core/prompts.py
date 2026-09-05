@@ -104,6 +104,7 @@ def build_system_prompt(
     current_date: str | None = None,
     date_range: str = "unknown",
     bank_list: str = "HDFC, ICIC, SBIN, UTIB, KKBK, CNRB, UBIN, AUBL, TMBL, RATN",
+    entity_id: str | None = None,
 ) -> str:
     """
     Build the full system prompt for SQL generation.
@@ -117,6 +118,9 @@ def build_system_prompt(
         date_range: Human-readable "MIN to MAX" string of the actual data,
             computed live — never hardcode this.
         bank_list: Comma-separated valid bank codes, computed live.
+        entity_id: The customer selected in the UI's dropdown (no login in
+            this build). When set, every query must filter to this entity —
+            enforced again after generation, this is the model-facing half.
 
     Returns:
         Complete system prompt string.
@@ -141,11 +145,20 @@ def build_system_prompt(
     date_info = f"\nCurrent date (data's own 'as of' date, use this for relative dates): {current_date}" if current_date else ""
     data_dictionary = DATA_DICTIONARY_TEMPLATE.format(bank_list=bank_list, date_range=date_range)
 
-    return f"""You are a **SQL generation assistant** for a bank transaction data system backed by DuckDB.
+    entity_scope_rule = ""
+    if entity_id:
+        entity_scope_rule = (
+            f"\n0. A customer is selected: entity_id = '{entity_id}'. EVERY query MUST filter to this "
+            f"entity — use the enriched views' `entity_id` column directly (they already expose it), "
+            f"e.g. `WHERE entity_id = '{entity_id}'`. A query that omits this filter will be rejected. "
+            f"This is a usability scope (there's no login in this build), not a security boundary."
+        )
 
-YOUR ONLY JOB: Convert natural language questions about bank transactions into executable DuckDB SQL queries.
+    return f"""You are a **SQL generation assistant** for a bank transaction data system backed by MySQL.
 
-CRITICAL RULES:
+YOUR ONLY JOB: Convert natural language questions about bank transactions into executable MySQL SQL queries.
+
+CRITICAL RULES:{entity_scope_rule}
 1. Return ONLY a single executable SQL query. No explanations, no commentary.
 2. Wrap your SQL in ```sql code blocks.
 3. Use ONLY the tables and columns defined in the schema below. Do NOT invent columns.
@@ -153,10 +166,12 @@ CRITICAL RULES:
 5. NEVER select `account_number` or `utr_number` directly — they are sensitive. Use
    `masked_account_number` / `masked_utr_token` from the enriched views instead. This is enforced
    by a hard guardrail; a query that violates it will be rejected.
-6. Use DuckDB SQL dialect (supports YEAR(), MONTH(), QUARTER(), DAYNAME(), DATE_DIFF(), etc.).
+6. Use MySQL SQL dialect (supports YEAR(), MONTH(), QUARTER(), DAYNAME(), DATEDIFF(), TIMESTAMPDIFF(), etc.).
+   This is MySQL, not DuckDB/Postgres — there is no ILIKE; string concatenation is CONCAT(), not `||`.
 7. Always use single quotes for string literals.
-8. When filtering by counterparty name, use ILIKE with wildcards (e.g. ILIKE '%amazon%') for
-   case-insensitive partial matching — extraction is best-effort, so exact equality is too strict.
+8. When filtering by counterparty name, use LIKE with wildcards (e.g. LIKE '%amazon%') — the default
+   collation is case-insensitive, so plain LIKE is enough; extraction is best-effort, so exact
+   equality is too strict.
 9. Prefer v_counterparty_spend_summary for "how much did we spend on X" style aggregate questions —
    it's pre-aggregated and avoids join fan-out. Use v_transaction_enriched for row-level detail.
 10. Always include ORDER BY for result clarity. Use DESC for amounts, ASC for dates.

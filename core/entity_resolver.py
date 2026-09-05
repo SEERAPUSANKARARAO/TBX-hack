@@ -13,8 +13,9 @@ import logging
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass
 
-import duckdb
 from rapidfuzz import fuzz, process
+
+from core.db_connection import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -134,19 +135,19 @@ class ResolvedEntities:
 class EntityResolver:
     """
     Resolves counterparty names and date expressions from user queries.
+    Connects via core.db_connection (MySQL) — see that module to change
+    where "the database" points.
 
     Usage:
-        resolver = EntityResolver("path/to/financial.duckdb")
+        resolver = EntityResolver()
         result = resolver.resolve("How much did we send to Amazon last month?")
     """
 
-    def __init__(self, db_path: str, fuzzy_threshold: int = 90):
+    def __init__(self, fuzzy_threshold: int = 90):
         """
         Args:
-            db_path: Path to the DuckDB database.
             fuzzy_threshold: Minimum fuzzy match score (0-100) to accept a match.
         """
-        self.db_path = db_path
         self.fuzzy_threshold = fuzzy_threshold
         self.counterparties = self._load_counterparties()
         self.banks = self._load_banks()
@@ -154,12 +155,14 @@ class EntityResolver:
     def _load_banks(self) -> dict[str, str]:
         """Load {bank_code: bank_name} from the fixed bank table."""
         try:
-            con = duckdb.connect(self.db_path, read_only=True)
-            rows = con.execute("SELECT bank_code, bank_name FROM bank").fetchall()
+            con = get_connection(readonly=True)
+            with con.cursor() as cur:
+                cur.execute("SELECT bank_code, bank_name FROM bank")
+                rows = cur.fetchall()
             con.close()
             return {code: name for code, name in rows}
         except Exception as e:
-            logger.warning("Failed to load bank list from %s: %s", self.db_path, e)
+            logger.warning("Failed to load bank list: %s", e)
             return {}
 
     def resolve_bank(self, query: str) -> tuple[str, str] | None:
@@ -187,18 +190,17 @@ class EntityResolver:
     def _load_counterparties(self) -> list[dict]:
         """Load distinct counterparty names extracted from transaction narration."""
         try:
-            con = duckdb.connect(self.db_path, read_only=True)
-            rows = con.execute("""
-                SELECT counterparty_name, rail_type, mention_count
-                FROM v_counterparty_lookup
-            """).fetchall()
+            con = get_connection(readonly=True)
+            with con.cursor() as cur:
+                cur.execute("SELECT counterparty_name, rail_type, mention_count FROM v_counterparty_lookup")
+                rows = cur.fetchall()
             con.close()
             return [
                 {"counterparty_name": name, "rail_type": rail, "mention_count": cnt}
                 for name, rail, cnt in rows
             ]
         except Exception as e:
-            logger.warning("Failed to load counterparty lookup from %s: %s", self.db_path, e)
+            logger.warning("Failed to load counterparty lookup: %s", e)
             return []
 
     def _build_search_index(self) -> dict[str, dict]:

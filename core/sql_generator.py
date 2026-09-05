@@ -16,7 +16,7 @@ import httpx
 
 from core.prompts import build_system_prompt, build_user_message, build_repair_prompt
 from core.few_shot_examples import format_few_shot_messages
-from core.sql_validator import extract_sql_from_response, validate_sql, sanitize_sql, enforce_row_limit
+from core.sql_validator import extract_sql_from_response, validate_sql, sanitize_sql, enforce_row_limit, ValidationResult
 from core.query_engine import QueryEngine, QueryResult
 from core.entity_resolver import EntityResolver
 from core.data_bounds import get_date_range
@@ -72,16 +72,16 @@ class PipelineResult:
 
 class SQLGenerator:
     """
-    Orchestrates the full Text-to-SQL pipeline.
+    Orchestrates the full Text-to-SQL pipeline. Database connection details
+    live in config.py / core.db_connection — nothing here is DB-specific.
 
     Usage:
-        generator = SQLGenerator(db_path="db/financial.duckdb", llm_provider="openrouter", ...)
+        generator = SQLGenerator(llm_provider="openrouter", ...)
         result = generator.generate("How much did we send to Amazon last month?")
     """
 
     def __init__(
         self,
-        db_path: str,
         llm_provider: str = "openrouter",
         llm_model: str = "qwen/qwen-2.5-coder-32b-instruct",
         ollama_base_url: str = "http://localhost:11434",
@@ -95,7 +95,6 @@ class SQLGenerator:
         temperature: float = 0.0,
         max_tokens: int = 1024,
     ):
-        self.db_path = db_path
         self.llm_provider = llm_provider
         self.llm_model = llm_model
         self.ollama_base_url = ollama_base_url.rstrip("/")
@@ -108,8 +107,8 @@ class SQLGenerator:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        self.query_engine = QueryEngine(db_path)
-        self.entity_resolver = EntityResolver(db_path, fuzzy_threshold)
+        self.query_engine = QueryEngine()
+        self.entity_resolver = EntityResolver(fuzzy_threshold)
 
         self.conversation_history: list[dict] = []
         self.last_usage: dict = {}
@@ -119,6 +118,7 @@ class SQLGenerator:
         user_query: str,
         reference_date: date | None = None,
         dry_run: bool = False,
+        entity_id: str | None = None,
     ) -> PipelineResult:
         """
         Run the full Text-to-SQL pipeline.
@@ -129,12 +129,31 @@ class SQLGenerator:
                 should be the data's own max date (core.data_bounds), not
                 necessarily wall-clock today.
             dry_run: If True, skip the LLM call and return the assembled prompt.
+            entity_id: The customer selected in the UI's entity dropdown (there
+                is no login in this build — see README). When set, generated
+                SQL is required to filter to this entity_id; this is a
+                usability scope, not a security boundary (the DB user can
+                still read every entity's rows — see core/db_connection.py).
 
         Returns:
             PipelineResult with SQL, execution results, and metadata.
         """
         start_time = time.perf_counter()
         result = PipelineResult(user_query=user_query)
+
+        def _validate(candidate_sql: str):
+            v = validate_sql(candidate_sql)
+            if v.is_valid and entity_id and entity_id not in candidate_sql:
+                return ValidationResult(
+                    is_valid=False, sql=candidate_sql,
+                    error=(
+                        f"BLOCKED: a customer is selected (entity_id='{entity_id}') but the query doesn't "
+                        f"filter by it. Every account/transaction reference must be scoped to this entity_id "
+                        f"— join to account and add `account.entity_id = '{entity_id}'` (or filter directly "
+                        f"on the enriched views' entity_id column)."
+                    ),
+                )
+            return v
 
         # ── Step 1: Entity Resolution ──
         entities = self.entity_resolver.resolve(user_query, reference_date)
@@ -156,13 +175,14 @@ class SQLGenerator:
             return result
 
         # ── Step 2: Build Messages ──
-        min_date, max_date = get_date_range(self.db_path)
+        min_date, max_date = get_date_range()
         date_range_str = f"{min_date} to {max_date}" if min_date and max_date else "unknown"
 
         system_prompt = build_system_prompt(
             resolved_entities=entities.to_dict(),
             current_date=str(reference_date) if reference_date else (str(max_date) if max_date else None),
             date_range=date_range_str,
+            entity_id=entity_id,
         )
         user_message = build_user_message(user_query, self.conversation_history)
         few_shot = format_few_shot_messages()
@@ -200,7 +220,7 @@ class SQLGenerator:
         # ── Step 4: Extract & Validate SQL ──
         sql = sanitize_sql(extract_sql_from_response(llm_response))
         result.extracted_sql = sql
-        validation = validate_sql(sql)
+        validation = _validate(sql)
         result.sql_valid = validation.is_valid
 
         # ── Step 5: Unified auto-repair loop — covers BOTH pre-execution
@@ -240,7 +260,7 @@ class SQLGenerator:
                 sql = sanitize_sql(extract_sql_from_response(repair_response))
                 result.extracted_sql = sql
                 result.raw_llm_response += f"\n\n--- REPAIR ATTEMPT {retries} ---\n{repair_response}"
-                validation = validate_sql(sql)
+                validation = _validate(sql)
                 result.sql_valid = validation.is_valid
             except Exception as e:
                 result.validation_error = f"Repair attempt {retries} failed: {str(e)}"
