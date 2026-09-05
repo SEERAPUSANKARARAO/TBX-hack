@@ -21,6 +21,8 @@ from core.query_engine import QueryEngine, QueryResult
 from core.entity_resolver import EntityResolver
 from core.data_bounds import get_date_range
 from core.llm_http import post_with_retry
+from core.input_classifier import classify_input
+from core.followups import build_followup_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,12 @@ class PipelineResult:
     error: str | None = None
     clarification_needed: str | None = None
 
+    # Set when core.input_classifier short-circuits before the pipeline runs.
+    direct_response: str | None = None
+    direct_response_kind: str | None = None  # "greeting" | "blocked"
+
+    suggestions: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "user_query": self.user_query,
@@ -67,6 +75,9 @@ class PipelineResult:
             "cost_usd": self.cost_usd,
             "error": self.error,
             "clarification_needed": self.clarification_needed,
+            "direct_response": self.direct_response,
+            "direct_response_kind": self.direct_response_kind,
+            "suggestions": self.suggestions,
         }
 
 
@@ -154,6 +165,16 @@ class SQLGenerator:
                     ),
                 )
             return v
+
+        # ── Step 0: Pre-pipeline classification (no LLM call) ──
+        # Greetings and prompt-injection attempts never reach entity
+        # resolution or SQL generation at all.
+        classification = classify_input(user_query)
+        if classification.kind in ("greeting", "blocked"):
+            result.direct_response = classification.response
+            result.direct_response_kind = classification.kind
+            result.total_time_ms = (time.perf_counter() - start_time) * 1000
+            return result
 
         # ── Step 1: Entity Resolution ──
         entities = self.entity_resolver.resolve(user_query, reference_date)
@@ -286,6 +307,8 @@ class SQLGenerator:
             self.conversation_history.append({"query": user_query, "sql": sql, "summary": summary})
             if len(self.conversation_history) > 5:
                 self.conversation_history = self.conversation_history[-5:]
+
+        result.suggestions = build_followup_suggestions(result.resolved_entities, query_result.success)
 
         result.total_time_ms = (time.perf_counter() - start_time) * 1000
         return result

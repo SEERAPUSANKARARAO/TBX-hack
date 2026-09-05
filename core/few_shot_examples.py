@@ -106,6 +106,19 @@ ORDER BY transaction_amount DESC
 LIMIT 5;""",
         "explanation": "Row-level detail query (not aggregation) — uses v_transaction_enriched directly, filtered to the spend direction."
     },
+
+    # ── Example 7: Fee/charge-type description — NOT a counterparty, filter on description directly ──
+    {
+        "question": "How much did we pay in IMPS charges this year?",
+        "sql": """SELECT
+    COUNT(*) AS transaction_count,
+    SUM(transaction_amount) AS total_amount
+FROM v_transaction_enriched
+WHERE description LIKE '%IMPS charges%'
+  AND transaction_type = 'debit'
+  AND txn_year = YEAR(DATE '2026-09-05');""",
+        "explanation": "\"IMPS charges\" is a bank-initiated fee description, not a counterparty — counterparty_name is NULL for these rows, so filtering on it would silently miss every matching transaction. Filter on the raw description column instead."
+    },
 ]
 
 

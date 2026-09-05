@@ -15,9 +15,11 @@ Endpoints:
     DELETE /api/history      — Clear conversation history
     GET  /api/counterparties — List extracted counterparty names
     GET  /api/entities       — List customer entity_ids (dropdown; no login in this build)
+    GET  /api/accuracy       — Latest benchmark.py accuracy/efficiency summary
 """
 import sys
 import io
+import json
 import csv
 import logging
 from pathlib import Path
@@ -174,6 +176,16 @@ async def query(request: QueryRequest):
         logger.exception("Pipeline error")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
 
+    if result.direct_response is not None:
+        # Greeting or blocked prompt-injection attempt — never reached entity
+        # resolution or SQL generation, nothing else to populate.
+        return QueryResponse(
+            user_query=result.user_query,
+            answer=result.direct_response,
+            direct_response_kind=result.direct_response_kind,
+            total_time_ms=result.total_time_ms,
+        )
+
     response = QueryResponse(
         user_query=result.user_query,
         resolved_entities=_build_resolved_entities_response(result.resolved_entities),
@@ -188,6 +200,7 @@ async def query(request: QueryRequest):
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,
         error=result.error,
+        suggestions=result.suggestions,
     )
 
     numbers_grounded = True
@@ -460,6 +473,45 @@ async def list_entities():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/accuracy")
+async def accuracy_summary():
+    """
+    Summary of the most recent `python benchmark.py` run — pass rate,
+    refusal precision, PII/guardrail safety, latency, tokens/cost.
+    Reads benchmark_results.json (repo root); returns available=False if
+    it hasn't been generated yet.
+    """
+    results_path = PROJECT_ROOT / "benchmark_results.json"
+    if not results_path.exists():
+        return {"available": False, "message": "Run `python benchmark.py` to generate this."}
+
+    try:
+        results = json.loads(results_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"available": False, "message": f"Could not read benchmark_results.json: {e}"}
+
+    total = len(results)
+    passed = sum(1 for r in results if r.get("pass"))
+    by_kind = {}
+    for r in results:
+        kind = r.get("kind", "normal")
+        by_kind.setdefault(kind, {"pass": 0, "total": 0})
+        by_kind[kind]["total"] += 1
+        if r.get("pass"):
+            by_kind[kind]["pass"] += 1
+
+    return {
+        "available": True,
+        "total_queries": total,
+        "pass_rate": round(passed / total * 100, 1) if total else 0,
+        "passed": passed,
+        "by_kind": by_kind,
+        "total_tokens_in": sum(r.get("prompt_tokens", 0) for r in results),
+        "total_tokens_out": sum(r.get("completion_tokens", 0) for r in results),
+        "total_cost_usd": sum(r.get("cost_usd", 0) for r in results),
+    }
 
 
 STATIC_DIR = PROJECT_ROOT / "static"

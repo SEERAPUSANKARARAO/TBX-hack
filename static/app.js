@@ -37,6 +37,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const metaLlm = document.getElementById("meta-llm");
   const metaRetries = document.getElementById("meta-retries");
   const metaTokens = document.getElementById("meta-tokens");
+  const metaColumns = document.getElementById("meta-columns");
+  const metaRecords = document.getElementById("meta-records");
+  const confidenceReasonsCard = document.getElementById("confidence-reasons-card");
+  const confidenceReasonsList = document.getElementById("confidence-reasons-list");
+  const btnConfWhy = document.getElementById("btn-conf-why");
+  const followupRow = document.getElementById("followup-row");
+  const followupChips = document.getElementById("followup-chips");
+  const accuracyBadge = document.getElementById("accuracy-badge");
+  const accuracyText = document.getElementById("accuracy-text");
   const btnExportCsv = document.getElementById("btn-export-csv");
   const btnCopySql = document.getElementById("btn-copy-sql");
   const btnClearChat = document.getElementById("btn-clear-chat");
@@ -51,6 +60,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initial Health Check
   fetchHealth();
   fetchEntities();
+  fetchAccuracy();
+
+  // Confidence "why?" toggle
+  btnConfWhy.addEventListener("click", () => {
+    confidenceReasonsCard.classList.toggle("hidden");
+  });
 
   // Prompt Chips
   document.querySelectorAll(".prompt-chip").forEach((chip) => {
@@ -165,13 +180,24 @@ document.addEventListener("DOMContentLoaded", () => {
       entityTagsRow.classList.toggle("hidden", !hasEntities);
     }
 
-    // Confidence Badge
+    // Confidence Badge + reasoning behind the score
     if (data.confidence) {
       confidenceBadge.className = `confidence-pill ${data.confidence.level.toLowerCase()}`;
       confText.textContent = `${data.confidence.score}% ${data.confidence.level} Confidence`;
       confidenceBadge.classList.remove("hidden");
+
+      confidenceReasonsList.innerHTML = "";
+      (data.confidence.reasons || []).forEach((reason) => {
+        const li = document.createElement("li");
+        li.textContent = reason;
+        confidenceReasonsList.appendChild(li);
+      });
+      if (!data.confidence.reasons || data.confidence.reasons.length === 0) {
+        confidenceReasonsCard.classList.add("hidden");
+      }
     } else {
       confidenceBadge.classList.add("hidden");
+      confidenceReasonsCard.classList.add("hidden");
     }
 
     // Anomaly Detection
@@ -196,13 +222,37 @@ document.addEventListener("DOMContentLoaded", () => {
     if (data.query_result) {
       metaTables.textContent = (data.query_result.tables_touched || []).join(", ") || "None";
       metaLatency.textContent = `${data.query_result.execution_time_ms ? data.query_result.execution_time_ms.toFixed(1) : 0} ms`;
+      metaColumns.textContent = (data.query_result.columns || []).join(", ") || "—";
+      metaColumns.title = metaColumns.textContent;
+      metaRecords.textContent = `${data.query_result.row_count || 0}`;
     } else {
       metaTables.textContent = "—";
       metaLatency.textContent = "—";
+      metaColumns.textContent = "—";
+      metaRecords.textContent = "0";
     }
     metaLlm.textContent = data.llm_model || data.llm_provider || "Ollama";
     metaRetries.textContent = `${data.retries || 0}`;
     metaTokens.textContent = `${data.prompt_tokens || 0} / ${data.completion_tokens || 0}`;
+
+    // Follow-up Suggestions
+    followupChips.innerHTML = "";
+    if (data.suggestions && data.suggestions.length > 0) {
+      data.suggestions.forEach((s) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "followup-chip";
+        chip.textContent = s;
+        chip.addEventListener("click", () => {
+          queryInput.value = s;
+          queryForm.dispatchEvent(new Event("submit"));
+        });
+        followupChips.appendChild(chip);
+      });
+      followupRow.classList.remove("hidden");
+    } else {
+      followupRow.classList.add("hidden");
+    }
 
     // Enable/Disable Action Buttons
     btnExportCsv.disabled = !data.extracted_sql || !data.query_result || !data.query_result.success;
@@ -433,6 +483,21 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     } catch (e) {
       // Non-fatal — the app still works fully unscoped without this.
+    }
+  }
+
+  // Fetch Accuracy — summary of the last `python benchmark.py` gold-set run.
+  async function fetchAccuracy() {
+    try {
+      const resp = await fetch("/api/accuracy");
+      const data = await resp.json();
+      if (data.available) {
+        accuracyText.textContent = `${data.pass_rate}% gold-set (${data.passed}/${data.total_queries})`;
+        accuracyBadge.title = `From the last benchmark.py run — ${data.total_tokens_in}/${data.total_tokens_out} tokens, $${(data.total_cost_usd || 0).toFixed(6)} total`;
+        accuracyBadge.classList.remove("hidden");
+      }
+    } catch (e) {
+      // Non-fatal — benchmark_results.json may not exist yet.
     }
   }
 

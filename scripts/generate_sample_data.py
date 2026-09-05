@@ -68,6 +68,21 @@ COUNTERPARTIES = [
 # Counterparties given an occasional statistical outlier for anomaly detection.
 ANOMALY_PRONE = {"SELECTION ELECTRONICS", "AMAZON RETAIL INDIA", "RELIANCE DIGITAL RETAIL LTD", "TATA POWER COMPANY LIMITED"}
 
+# Bank-initiated fee/charge/type descriptions — deliberately NOT counterparty
+# narration (matches the client doc's own description examples, "IMPS
+# charges" / "Cheque Deposits"). counterparty_name will correctly be NULL for
+# these; they're only findable via a raw `description` search, exercising
+# that fallback path end-to-end instead of leaving it untested.
+FEE_DESCRIPTIONS = [
+    ("IMPS charges", "debit", (5, 25)),
+    ("NEFT charges", "debit", (2, 15)),
+    ("Cheque Deposits", "credit", (5000, 80000)),
+    ("Monthly account maintenance fee", "debit", (50, 250)),
+    ("SMS alert charges", "debit", (5, 20)),
+    ("Interest credited", "credit", (100, 3000)),
+    ("Minimum balance charges", "debit", (100, 500)),
+]
+
 
 def rand_digits(n):
     return "".join(random.choice("0123456789") for _ in range(n))
@@ -192,13 +207,18 @@ def write_transaction_csv(accounts, n_transactions=450):
             "description", "transaction_amount", "transaction_reference_id", "utr_number",
         ])
         for _ in range(n_transactions):
-            name, style, txn_type, (lo, hi) = random.choice(COUNTERPARTIES)
             account_id = random.choice(accounts)
-            description = gen_description(name, style)
 
-            amount = round(random.uniform(lo, hi), 2)
-            if name in ANOMALY_PRONE and random.random() < 0.06:
-                amount = round(amount * random.uniform(4, 8), 2)
+            if random.random() < 0.08:
+                # Bank-initiated fee/charge row — no counterparty at all.
+                description, txn_type, (lo, hi) = random.choice(FEE_DESCRIPTIONS)
+                amount = round(random.uniform(lo, hi), 2)
+            else:
+                name, style, txn_type, (lo, hi) = random.choice(COUNTERPARTIES)
+                description = gen_description(name, style)
+                amount = round(random.uniform(lo, hi), 2)
+                if name in ANOMALY_PRONE and random.random() < 0.06:
+                    amount = round(amount * random.uniform(4, 8), 2)
 
             ref_id = rand_digits(random.choice([8, 9, 10])) if random.random() > 0.25 else None
             utr = rand_masked_utr() if random.random() > 0.30 else None

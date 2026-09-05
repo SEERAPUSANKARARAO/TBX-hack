@@ -30,7 +30,11 @@ CREATE TABLE transaction (
     account_id               VARCHAR NOT NULL REFERENCES account(account_id),
     transaction_date         TIMESTAMP NOT NULL,
     transaction_type         VARCHAR NOT NULL,   -- 'credit' or 'debit' ONLY
-    description              VARCHAR,            -- raw bank narration (NEFT/IMPS/UPI/FT format)
+    description              VARCHAR,            -- raw bank narration: either counterparty-bearing
+                                                    -- (NEFT/IMPS/UPI/FT format -> counterparty_name below),
+                                                    -- OR a bank-initiated fee/charge/type description with
+                                                    -- no counterparty at all (e.g. "IMPS charges",
+                                                    -- "Cheque Deposits") -> filter THIS column directly for those
     transaction_amount       DECIMAL(15,2) NOT NULL,
     transaction_reference_id VARCHAR,             -- plaintext reference/receipt number
     utr_number                VARCHAR             -- SENSITIVE — forbidden, use v_transaction_enriched.masked_utr_token
@@ -172,6 +176,12 @@ CRITICAL RULES:{entity_scope_rule}
 8. When filtering by counterparty name, use LIKE with wildcards (e.g. LIKE '%amazon%') — the default
    collation is case-insensitive, so plain LIKE is enough; extraction is best-effort, so exact
    equality is too strict.
+8b. `counterparty_name` is NULL for transactions whose `description` never had an extractable
+   counterparty — e.g. bank-initiated entries like "IMPS charges", "Cheque Deposits", "Interest
+   credited", account fees. If the question is about one of THOSE (a fee/charge/transaction-type,
+   not a person or business), filter on the raw `description` column directly instead —
+   e.g. `WHERE description LIKE '%IMPS charges%'`. Never assume such a row can be found via
+   `counterparty_name` — it will be NULL and the row will be silently missed.
 9. Prefer v_counterparty_spend_summary for "how much did we spend on X" style aggregate questions —
    it's pre-aggregated and avoids join fan-out. Use v_transaction_enriched for row-level detail.
 10. Always include ORDER BY for result clarity. Use DESC for amounts, ASC for dates.

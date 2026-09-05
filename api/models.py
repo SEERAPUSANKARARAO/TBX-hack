@@ -98,6 +98,8 @@ class QueryResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     error: str | None = None
+    direct_response_kind: str | None = None  # "greeting" | "blocked" — set when no SQL was generated at all
+    suggestions: list[str] = []
 
 
 class HealthResponse(BaseModel):

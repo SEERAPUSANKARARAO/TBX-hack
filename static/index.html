@@ -27,6 +27,10 @@
       </div>
 
       <div class="header-right">
+        <div id="accuracy-badge" class="accuracy-badge hidden" title="From the last benchmark.py gold-set run">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          <span id="accuracy-text">—</span>
+        </div>
         <div class="pii-badge" title="account_number and utr_number are never returned raw — always masked">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           PII Masked
@@ -129,6 +133,7 @@
             <div id="confidence-badge" class="confidence-pill high hidden">
               <span class="conf-dot"></span>
               <span id="conf-text">98% High Confidence</span>
+              <button id="btn-conf-why" class="conf-why-btn" title="Why this score?" type="button">?</button>
             </div>
           </div>
           <div class="dashboard-actions">
@@ -141,6 +146,12 @@
               Copy SQL
             </button>
           </div>
+        </div>
+
+        <!-- Confidence Reasoning — hidden until "?" is clicked -->
+        <div id="confidence-reasons-card" class="confidence-reasons-card hidden">
+          <span class="confidence-reasons-title">Why this confidence score:</span>
+          <ul id="confidence-reasons-list"></ul>
         </div>
 
         <!-- Anomaly Alert Card (Visible when anomaly detected) -->
@@ -168,6 +179,12 @@
 
           <!-- Grounded Entity Badges -->
           <div id="entity-tags-row" class="entity-tags-row hidden"></div>
+
+          <!-- Follow-up Suggestions -->
+          <div id="followup-row" class="followup-row hidden">
+            <span class="followup-label">Try next:</span>
+            <div id="followup-chips" class="followup-chips"></div>
+          </div>
         </div>
 
         <!-- Interactive Data Grid -->
@@ -219,6 +236,14 @@
                 <div class="meta-item">
                   <span class="meta-label">Tokens (in / out)</span>
                   <span id="meta-tokens" class="meta-val">0 / 0</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Columns Used</span>
+                  <span id="meta-columns" class="meta-val">—</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Records Used</span>
+                  <span id="meta-records" class="meta-val">0</span>
                 </div>
               </div>
             </div>

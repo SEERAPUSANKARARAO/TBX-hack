@@ -1,18 +1,6 @@
 # Model Efficiency & Accuracy Report
 
-_Generated 2026-09-05T10:44:32 by `benchmark.py`. All numbers below are measured from real API calls against the configured model — none are estimated or hardcoded.
-
-> **Addendum (post-run):** two things changed after this run and are not reflected in the numbers below.
-> (1) Q20 ("Payments to Reliance Digital Retail (dropping 'Ltd')") failed due to a bug in the synthetic
-> data generator — one counterparty name had its spaces stripped (`RELIANCEDIGITALRETAILLTD`), so a
-> naturally-phrased follow-up couldn't fuzzy-match it. Fixed in `scripts/generate_sample_data.py` and
-> re-verified directly against the entity resolver and a dry-run prompt assembly; the ~24 queries that
-> failed with `429 Too Many Requests` are unrelated to this and unrelated to model accuracy — see the
-> rate-limit note below. (2) A near-identical failure mode (a bare quoted legal suffix like `'Ltd'` being
-> treated as the target entity) was hardened against directly in `core/entity_resolver.py`, independent of
-> the data fix. A full re-run was not repeated immediately after, given how rate-limited this specific
-> model/tier is (see below) — re-run `python benchmark.py` once a less-throttled provider is configured to
-> get a clean end-to-end number.
+_Generated 2026-09-05T11:57:06 by `benchmark.py`. All numbers below are measured from real API calls against the configured model — none are estimated or hardcoded.
 
 ## Model choice
 
@@ -25,13 +13,13 @@ _Generated 2026-09-05T10:44:32 by `benchmark.py`. All numbers below are measured
 | Metric | Value |
 |---|---|
 | Total queries | 36 |
-| Pass rate | 22/36 (61.1%) |
+| Pass rate | 19/36 (52.8%) |
 | Refusal precision (unanswerable questions) | 100% |
 | PII guardrail safety rate | 100% |
 | Destructive-SQL guardrail block rate | 100% |
-| Avg latency | 16978 ms |
-| P50 / P95 latency | 23095 ms / 33138 ms |
-| Total tokens (in / out) | 38663 / 1704 |
+| Avg latency | 20339 ms |
+| P50 / P95 latency | 28476 ms / 31518 ms |
+| Total tokens (in / out) | 31851 / 1604 |
 | Total cost (measured) | $0.000000 |
 | Avg cost / query | $0.000000 |
 | Synthesis step included in cost? | No — SQL generation only; run with --with-synthesis for full end-to-end cost |
@@ -40,24 +28,24 @@ _Generated 2026-09-05T10:44:32 by `benchmark.py`. All numbers below are measured
 
 | Category | Pass | Total | Avg latency (ms) |
 |---|---|---|---|
-| Spend Aggregation | 2 | 5 | 21376 |
-| Date Filters | 4 | 5 | 22144 |
-| Balances | 3 | 3 | 9561 |
-| Reconciliation | 1 | 3 | 21910 |
-| Credit/Debit | 0 | 2 | 31833 |
-| Fuzzy NLU | 1 | 4 | 15015 |
-| Multi-Turn | 3 | 4 | 20948 |
-| PII Guardrail | 2 | 2 | 16573 |
-| Guardrails | 2 | 2 | 0 |
-| Refusal | 4 | 4 | 0 |
-| Analytical Views | 0 | 2 | 29270 |
+| Spend Aggregation | 3 | 5 | 21056 |
+| Date Filters | 3 | 5 | 21118 |
+| Balances | 1 | 3 | 23831 |
+| Reconciliation | 0 | 3 | 29940 |
+| Credit/Debit | 0 | 2 | 30059 |
+| Fuzzy NLU | 2 | 4 | 27698 |
+| Multi-Turn | 1 | 4 | 27861 |
+| PII Guardrail | 2 | 2 | 15459 |
+| Guardrails | 2 | 2 | 1 |
+| Refusal | 4 | 4 | 1 |
+| Analytical Views | 1 | 2 | 23377 |
 
 ## What's enforced by code, not by prompting
 
 - **Numeric grounding**: every number in a synthesized answer is checked against the actual query result before being shown; a mismatch falls back to a deterministic template instead of the LLM's prose (see `core/response_synthesizer.py`).
 - **PII masking**: `account_number` / `utr_number` cannot be selected raw — blocked at SQL validation time, and masked again defensively at the query-execution layer even if that were ever bypassed (see `core/sql_validator.py`, `core/query_engine.py`).
-- **Read-only execution**: the DuckDB connection used for query execution is opened read-only, independent of the SQL-statement-type guardrail.
-- **Execution-time auto-repair**: a syntactically valid query that fails at execution (e.g. wrong column) is fed back to the model with the real DuckDB error and retried, not just pre-execution validation failures.
+- **Read-only execution**: query execution always connects as a dedicated MySQL user with SELECT-only grants (`finquery_ro`) — a real database-level guarantee, independent of the SQL-statement-type guardrail (see `core/db_connection.py`).
+- **Execution-time auto-repair**: a syntactically valid query that fails at execution (e.g. wrong column) is fed back to the model with the real MySQL error and retried, not just pre-execution validation failures.
 - **Pre-aggregated views**: counterparty spend questions are steered toward `v_counterparty_spend_summary` rather than ad hoc joins over raw tables, to avoid join fan-out silently inflating a sum.
 
 ## Operational notes
