@@ -336,6 +336,20 @@ async def query(request: QueryRequest):
         )
     elif result.clarification_needed:
         response.answer = result.clarification_needed
+    elif result.validation_error:
+        # The LLM's output never validated as SQL at all (e.g. it answered
+        # conversationally, or produced something the validator rejected) —
+        # result.query_result is never set in this case either, so without
+        # this branch the generic fallback text would wrongly claim success.
+        response.answer = (
+            f"I wasn't able to turn that into a valid SQL query: {result.validation_error} "
+            f"Try rephrasing as a specific question about your transaction data — spend, "
+            f"balance, or reconciliation status."
+        )
+    elif result.error:
+        # The LLM call itself failed (network/provider error), before any
+        # SQL was even produced.
+        response.answer = f"Something went wrong while generating a response: {result.error}"
     elif request.dry_run:
         # dry_run returns before any execution, so result.query_result is
         # never set here — without this, the same generic fallback text

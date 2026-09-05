@@ -26,6 +26,12 @@ GREETING_PATTERNS = [
     (r'^\s*(bye|goodbye|see\s*you|later)\s*[!.]*\s*$', "farewell"),
     (r'^\s*(how\s*are\s*you\??|what\'?s\s*up\??|sup)\s*$', "greeting"),
     (r'^\s*(ok|okay|cool|great|nice|got\s*it|sounds\s*good)\s*[!.]*\s*$', "acknowledgement"),
+    # Compound greeting + pleasantry ("hi, how are you", "hello, what's up?")
+    # — the plain single-phrase patterns above require the WHOLE message be
+    # just the greeting OR just the pleasantry, so a natural combination of
+    # both fell through to the SQL pipeline entirely (a real reported bug).
+    (r'^\s*(hi|hello|hey|hiya|yo)\s*[,!.]*\s*(how\s*are\s*you\??|what\'?s\s*up\??|sup)\s*[!.?]*\s*$', "greeting"),
+    (r'^\s*good\s*(morning|afternoon|evening)\s*[,!.]*\s*how\s*are\s*you\??\s*[!.?]*\s*$', "greeting"),
 ]
 
 GREETING_RESPONSES = {
