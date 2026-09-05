@@ -118,6 +118,62 @@ def test_input_classifier():
     return all_passed
 
 
+def test_response_synthesizer_helpers():
+    """
+    Unit-test the numeric-grounding and currency-formatting logic directly.
+    This is the actual "never hallucinate a number" enforcement — previously
+    only ever exercised indirectly through live (rate-limited) LLM calls.
+    """
+    import re
+    from core.response_synthesizer import _collect_allowed_numbers, _verify_numbers_grounded
+
+    print(f"\n{DIVIDER}")
+    print("TEST: Response Synthesizer — numeric grounding + currency stripping")
+    print(DIVIDER)
+
+    all_passed = True
+
+    query_result = {
+        "rows": [{"counterparty_name": "AMAZON RETAIL INDIA", "total_spend": 45231.5}],
+        "row_count": 1,
+    }
+    allowed = _collect_allowed_numbers(query_result)
+
+    cases = [
+        ("You spent 45,231.50 on Amazon this month.", True, "Exact grounded number, comma-formatted"),
+        ("You spent 45231.5 on Amazon this month.", True, "Exact grounded number, no comma"),
+        ("You spent 99,999.00 on Amazon this month.", False, "Invented number not in the result"),
+        ("That's about 15% higher than average.", False, "Invented derived percentage not in the result"),
+        ("Found 1 result for the year 2026.", True, "Row count (1) and a 4-digit year should not be flagged"),
+    ]
+    for answer, expected_grounded, desc in cases:
+        actual = _verify_numbers_grounded(answer, allowed)
+        passed = actual == expected_grounded
+        status = "PASS" if passed else "FAIL"
+        if not passed:
+            all_passed = False
+        print(f"  [{status}] {desc}")
+        print(f"        {answer!r} -> grounded={actual} (expected {expected_grounded})")
+
+    print(f"\n  {SUBDIV}")
+    print("  Currency-symbol stripping (this is INR data — a model that ignores the")
+    print("  'no $ sign' prompt instruction is corrected here, not just asked nicely):\n")
+
+    currency_cases = [
+        ("You spent $45,231.00 on Amazon this month.", "You spent 45,231.00 on Amazon this month."),
+        ("The total is 45,231.00 across 3 transactions.", "The total is 45,231.00 across 3 transactions."),
+    ]
+    for raw, expected in currency_cases:
+        cleaned = re.sub(r'\$(?=\d)', '', raw)
+        passed = cleaned == expected
+        status = "PASS" if passed else "FAIL"
+        if not passed:
+            all_passed = False
+        print(f"  [{status}] {raw!r} -> {cleaned!r}")
+
+    return all_passed
+
+
 def test_entity_resolver():
     """Test the entity resolver component in isolation."""
     from core.entity_resolver import EntityResolver
@@ -396,7 +452,7 @@ def main():
     parser = argparse.ArgumentParser(description="Test the Financial AI Chatbot pipeline")
     parser.add_argument("--dry-run", action="store_true", help="Skip LLM calls, show assembled prompts only")
     parser.add_argument("--interactive", "-i", action="store_true", help="Enter interactive query mode")
-    parser.add_argument("--component", choices=["parser", "classifier", "resolver", "validator", "engine", "pipeline"],
+    parser.add_argument("--component", choices=["parser", "classifier", "synthesizer", "resolver", "validator", "engine", "pipeline"],
                         help="Test a specific component only")
     args = parser.parse_args()
 
@@ -416,6 +472,9 @@ def main():
 
     if not args.component or args.component == "classifier":
         results["Input Classifier"] = test_input_classifier()
+
+    if not args.component or args.component == "synthesizer":
+        results["Response Synthesizer"] = test_response_synthesizer_helpers()
 
     if not args.component or args.component == "resolver":
         results["Entity Resolver"] = test_entity_resolver()

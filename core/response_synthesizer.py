@@ -51,8 +51,14 @@ def _collect_allowed_numbers(query_result: dict) -> set[str]:
 
 
 def _extract_numbers(text: str) -> list[str]:
-    """Numeric tokens the LLM's answer states (currency-formatted or bare)."""
-    return re.findall(r'-?\d[\d,]*\.?\d*', text)
+    """
+    Numeric tokens the LLM's answer states (currency-formatted or bare).
+    The decimal group requires at least one digit after the '.' — otherwise
+    a number at the end of a sentence ("...in 2026.") greedily swallows the
+    full stop into the token ("2026."), which then fails an exact 4-digit
+    year fullmatch downstream for no reason connected to grounding at all.
+    """
+    return re.findall(r'-?\d[\d,]*(?:\.\d+)?', text)
 
 
 def _normalize(token: str) -> str:
@@ -63,8 +69,16 @@ def _verify_numbers_grounded(answer: str, allowed_numbers: set[str]) -> bool:
     """
     True if every number-looking token in `answer` matches a value that
     actually appeared in the query result (allowing for $/comma/rounding
-    formatting differences). A year (e.g. "2026") or a small ordinal
-    ("top 5") is not treated as a groundable figure.
+    formatting differences). A year (e.g. "2026") is not treated as a
+    groundable figure.
+
+    Deliberately does NOT exempt small integers in general ("top 5 results")
+    — that used to be a blanket "abs(value) < 32" skip, but it let through
+    exactly the most dangerous hallucination case: a small invented
+    percentage or delta ("15% higher than last month") is also a small
+    integer. Legitimate structural counts (row_count, len(rows)) are already
+    included in `allowed_numbers` by _collect_allowed_numbers, so they don't
+    need a separate exemption here — only genuinely invented figures do.
     """
     for raw in _extract_numbers(answer):
         token = _normalize(raw)
@@ -74,12 +88,7 @@ def _verify_numbers_grounded(answer: str, allowed_numbers: set[str]) -> bool:
             value = float(token)
         except ValueError:
             continue
-        # Skip bare 4-digit years and single/double-digit small ordinals
-        # ("top 5", "5 results") — these aren't "computed figures", they're
-        # structural, and legitimately won't appear as a result cell.
         if re.fullmatch(r'\d{4}', token) and 1900 <= value <= 2100:
-            continue
-        if value == int(value) and abs(value) < 32 and "." not in token:
             continue
         candidates = {f"{value:.2f}", f"{value:.0f}", token}
         if not candidates & allowed_numbers:
@@ -156,7 +165,12 @@ QUERY RESULTS ({row_count} rows):
             openai_api_key, openai_base_url,
             groq_api_key, temperature, max_tokens,
         )
-        answer = response.strip()
+        # The prompt instructs "no $ sign" (this is INR data), but a model
+        # can ignore formatting instructions even when the numbers underneath
+        # are correct — this data doesn't reach the numeric-grounding check
+        # since that only extracts digits and never looks at the symbol in
+        # front of them. Enforce it here instead of trusting compliance.
+        answer = re.sub(r'\$(?=\d)', '', response.strip())
     except Exception as e:
         logger.warning("LLM synthesis failed, using template: %s", e)
         return _template_response(user_query, columns, rows, row_count), True, empty_usage
