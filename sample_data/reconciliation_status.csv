@@ -1,0 +1,43 @@
+reconciliation_id,transaction_id,payout_id,reconciliation_date,status,matched_amount,variance,variance_reason,reconciled_by,notes
+1,1,1,2026-01-22,reconciled,4250.00,0.00,,system,Auto-matched by invoice number
+2,2,2,2026-01-27,reconciled,1200.00,0.00,,system,Auto-matched by invoice number
+3,3,3,2026-01-24,reconciled,387.50,0.00,,system,Auto-matched by PO number
+4,4,,2026-02-01,unreconciled,0.00,215.00,No matching payout found,system,Dunder Mifflin payment not yet issued
+5,5,,2026-02-15,pending,0.00,3420.00,Payout not recorded,manual_review,Travel expense awaiting approval
+6,6,5,2026-02-12,reconciled,2800.00,0.00,,system,Auto-matched by invoice number
+7,7,4,2026-02-08,reconciled,8500.00,0.00,,system,Auto-matched by invoice number
+8,8,6,2026-02-14,reconciled,5600.00,0.00,,system,Auto-matched by invoice number
+9,9,7,2026-02-20,reconciled,4780.00,0.00,,system,Auto-matched by invoice number
+10,10,8,2026-02-22,reconciled,3200.00,0.00,,system,Auto-matched by invoice number
+11,11,9,2026-03-02,reconciled,12000.00,0.00,,system,Auto-matched by invoice number
+12,12,10,2026-02-27,reconciled,6750.00,0.00,,system,Auto-matched by PO number
+13,13,,2026-03-10,unreconciled,0.00,142.30,Below threshold - manual review needed,system,Small amount flagged
+14,14,,2026-03-15,pending,0.00,890.00,Pied Piper payout processing,system,Payment in transit
+15,15,11,2026-03-08,reconciled,8500.00,0.00,,system,Auto-matched by invoice number
+16,16,12,2026-03-12,reconciled,5600.00,0.00,,system,Auto-matched by invoice number
+17,17,13,2026-03-20,reconciled,5120.00,0.00,,system,Auto-matched by invoice number
+18,18,,2026-03-25,reconciled,450.00,0.00,,manual_review,Manually matched after vendor alias resolution
+19,19,,2026-03-28,pending,0.00,1850.00,Travel expense under review,manual_review,Manager approval pending
+20,20,15,2026-04-08,reconciled,2800.00,0.00,,system,Auto-matched by invoice number
+21,21,,2026-04-05,unreconciled,0.00,185.00,No matching payout found,system,Dunder Mifflin - small order
+22,22,14,2026-04-02,reconciled,12000.00,0.00,,system,Auto-matched by invoice number
+23,23,17,2026-04-12,reconciled,3200.00,0.00,,system,Auto-matched by invoice number
+24,24,16,2026-04-10,reconciled,8500.00,0.00,,system,Auto-matched by invoice number
+25,25,,2026-04-20,pending,0.00,3420.00,Travel payout processing,system,Prestige Travel payout delayed
+26,26,18,2026-04-22,reconciled,4950.00,0.00,,system,Auto-matched by invoice number
+27,27,19,2026-04-25,reconciled,7200.00,0.00,,system,Auto-matched by invoice number
+28,28,20,2026-05-05,reconciled,18400.00,0.00,,manual_review,Large amount manually verified
+29,29,,2026-04-28,unreconciled,0.00,425.80,Payout pending vendor confirmation,system,Acme Corp small order
+30,30,,2026-05-02,pending,0.00,950.00,Insurance rider payment processing,system,New policy - manual verification needed
+31,31,21,2026-05-08,reconciled,4500.00,0.00,,system,Auto-matched by invoice number
+32,32,22,2026-05-12,reconciled,8500.00,0.00,,system,Auto-matched by invoice number
+33,33,,2026-05-15,pending,0.00,2780.00,Conference expense under review,manual_review,Receipts being validated
+34,34,29,2026-05-20,unreconciled,3200.00,250.00,Amount mismatch - Hooli overcharge,manual_review,Hooli billed $3450 vs expected $3200
+35,35,23,2026-05-22,reconciled,4680.00,0.00,,system,Auto-matched by invoice number
+36,36,,2026-05-25,pending,0.00,890.00,Pied Piper payout delayed,system,Payment processing
+37,37,,2026-05-28,reconciled,320.00,0.00,,system,Auto-matched by invoice number
+38,38,,2026-06-01,unreconciled,0.00,198.00,No matching payout found,system,Dunder Mifflin small order
+39,39,26,2026-06-02,reconciled,5600.00,0.00,,system,Auto-matched by invoice number
+40,40,27,2026-06-08,pending,8500.00,0.00,,system,Payout pending - Wayne Enterprises
+41,41,,2026-06-10,pending,0.00,3800.00,Large amount requires approval,manual_review,Globex follow-up assessment
+42,42,,2026-06-12,unreconciled,0.00,5200.00,Payout not yet issued,system,Stark Industries networking equipment

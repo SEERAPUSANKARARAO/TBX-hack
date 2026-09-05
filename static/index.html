@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FinQuery AI — Deterministic Text-to-SQL Financial Intelligence</title>
+  <meta name="description" content="Zero-hallucination financial analytics powered by DuckDB and lightweight code LLMs." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- TOP HEADER -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="logo-badge">
+          <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+          </svg>
+        </div>
+        <div>
+          <h1 class="app-title">FinQuery <span class="gradient-text">AI</span></h1>
+          <p class="app-subtitle">Zero-Hallucination Deterministic Financial Text-to-SQL Engine</p>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span id="db-status-text">DuckDB: 152 Rows</span>
+        </div>
+        <div class="model-badge">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 14h-2v-4h2zm0-6h-2V8h2z"/></svg>
+          <span id="active-model-text">Qwen-2.5-Coder-7B</span>
+        </div>
+        <button id="btn-schema-modal" class="btn-secondary" title="View Database Schema">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+          Schema
+        </button>
+        <button id="btn-clear-chat" class="btn-icon" title="Reset Session History">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- MAIN SPLIT WORKSPACE -->
+    <main class="main-workspace">
+      <!-- LEFT PANE: CONVERSATION & PROMPTS -->
+      <section class="left-pane">
+        <div class="chat-header">
+          <span class="section-label">Financial Query Assistant</span>
+          <span class="session-tag" id="session-badge">Session: default</span>
+        </div>
+
+        <!-- Quick Prompt Chips -->
+        <div class="prompt-chips-container">
+          <span class="chips-title">Suggested Inquiries:</span>
+          <div class="chips-scroll">
+            <button class="prompt-chip" data-query="How much did we spend on AWS last quarter?">AWS Spend Q2</button>
+            <button class="prompt-chip" data-query="Who are our top 5 vendors by total spend?">Top 5 Vendors</button>
+            <button class="prompt-chip" data-query="List all unreconciled transactions over $5,000.">Unreconciled &gt; $5k</button>
+            <button class="prompt-chip" data-query="Show Acme Corp monthly spend breakdown.">Acme Corp Monthly</button>
+            <button class="prompt-chip" data-query="What is the reconciliation status breakdown for Wayne Enterprises?">Wayne Enterprises Status</button>
+            <button class="prompt-chip" data-query="Show me all software subscriptions paid this year.">Software Subscriptions</button>
+          </div>
+        </div>
+
+        <!-- Chat Messages Stream -->
+        <div class="chat-messages" id="chat-stream">
+          <div class="message-bubble bot-bubble welcome-message">
+            <div class="bot-avatar">FQ</div>
+            <div class="message-content">
+              <p><strong>Welcome to FinQuery AI!</strong></p>
+              <p>Ask any question in plain English regarding company spend, vendor payouts, reconciliation status, and chart of accounts. Every mathematical aggregate is deterministically executed in <strong>DuckDB</strong> with zero hallucination.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Query Input Bar -->
+        <div class="chat-input-container">
+          <form id="query-form" class="query-form">
+            <div class="input-wrapper">
+              <input
+                type="text"
+                id="user-query-input"
+                placeholder="Ask about vendor spend, date ranges, or reconciliation..."
+                autocomplete="off"
+                required
+              />
+              <button type="submit" id="btn-submit-query" class="btn-send" title="Run Query">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+              </button>
+            </div>
+            <div class="input-footer">
+              <label class="toggle-label">
+                <input type="checkbox" id="dry-run-toggle" />
+                <span>Dry-Run (Prompt Assembly Only)</span>
+              </label>
+              <span class="keyboard-hint">Press <strong>Enter</strong> ↵ to execute</span>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- RIGHT PANE: ANALYTICS & AUDIT DASHBOARD -->
+      <section class="right-pane">
+        <div class="dashboard-header">
+          <div class="dash-title-group">
+            <span class="section-label">Deterministic Analysis & Lineage</span>
+            <div id="confidence-badge" class="confidence-pill high hidden">
+              <span class="conf-dot"></span>
+              <span id="conf-text">98% High Confidence</span>
+            </div>
+          </div>
+          <div class="dashboard-actions">
+            <button id="btn-export-csv" class="btn-action" disabled title="Export current table to CSV">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Export CSV
+            </button>
+            <button id="btn-copy-sql" class="btn-action" disabled title="Copy generated SQL to clipboard">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copy SQL
+            </button>
+          </div>
+        </div>
+
+        <!-- Anomaly Alert Card (Visible when anomaly detected) -->
+        <div id="anomaly-container" class="anomaly-card hidden">
+          <div class="anomaly-header">
+            <div class="anomaly-icon-wrap">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </div>
+            <div>
+              <h4 class="anomaly-title">Statistical Spend Anomaly Detected</h4>
+              <p class="anomaly-sub">Calculated threshold: μ + 2.5σ baseline</p>
+            </div>
+          </div>
+          <div id="anomaly-list" class="anomaly-items"></div>
+        </div>
+
+        <!-- Synthesized Plain Language Summary -->
+        <div class="answer-card" id="answer-card">
+          <div class="answer-header">
+            <span class="card-tag">Synthesized Answer</span>
+            <span id="timing-tag" class="timing-tag">0.0 ms</span>
+          </div>
+          <p id="answer-text" class="answer-content">Submit a query on the left to inspect real-time deterministic financial insights.</p>
+          
+          <!-- Grounded Entity Badges -->
+          <div id="entity-tags-row" class="entity-tags-row hidden"></div>
+        </div>
+
+        <!-- Interactive Data Grid -->
+        <div class="table-container-card">
+          <div class="table-header-bar">
+            <span class="table-title">Query Result Grid</span>
+            <span id="row-count-badge" class="row-count-badge">0 rows</span>
+          </div>
+          <div class="table-scroll-wrapper" id="table-wrapper">
+            <div class="empty-table-placeholder" id="table-placeholder">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h18v18H3zM3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+              <p>No query executed yet.</p>
+            </div>
+            <table id="result-data-table" class="data-table hidden">
+              <thead id="table-head"></thead>
+              <tbody id="table-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Explainability & Lineage Accordion -->
+        <div class="accordion-card">
+          <details open class="lineage-details">
+            <summary class="accordion-summary">
+              <span>SQL Lineage & Audit Trace</span>
+              <span id="validation-pill" class="pill-badge valid">Read-Only Enforced</span>
+            </summary>
+            <div class="accordion-content">
+              <div class="sql-code-block">
+                <pre><code id="executed-sql-code">-- Executed SQL query will appear here</code></pre>
+              </div>
+              <div class="lineage-metadata-grid">
+                <div class="meta-item">
+                  <span class="meta-label">Touched Tables</span>
+                  <span id="meta-tables" class="meta-val">—</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Engine Latency</span>
+                  <span id="meta-latency" class="meta-val">0 ms</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">LLM Provider</span>
+                  <span id="meta-llm" class="meta-val">Ollama</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Auto-Repair Retries</span>
+                  <span id="meta-retries" class="meta-val">0</span>
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <!-- SCHEMA MODAL -->
+    <div id="schema-modal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <h3>Database Schema Explorer</h3>
+            <p>Analytical Views & Tables in DuckDB</p>
+          </div>
+          <button id="btn-close-modal" class="btn-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="modal-body" id="schema-modal-content">
+          <div class="loader-spinner"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

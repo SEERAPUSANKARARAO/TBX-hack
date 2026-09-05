@@ -1,0 +1,18 @@
+account_id,account_code,account_name,account_type,parent_account_code,description,is_active
+1,1000,Cash and Cash Equivalents,Asset,,Operating cash accounts,true
+2,1100,Accounts Receivable,Asset,,Outstanding customer invoices,true
+3,1200,Prepaid Expenses,Asset,,Prepaid subscriptions and services,true
+4,2000,Accounts Payable,Liability,,Amounts owed to vendors,true
+5,2100,Accrued Liabilities,Liability,,Accrued but unpaid expenses,true
+6,2200,Deferred Revenue,Liability,,Revenue collected but not yet earned,true
+7,3000,Retained Earnings,Equity,,Cumulative net income,true
+8,4000,Service Revenue,Revenue,,Revenue from professional services,true
+9,4100,Product Revenue,Revenue,,Revenue from product sales,true
+10,5000,Cost of Goods Sold,Expense,,Direct costs of service delivery,true
+11,5100,Payroll Expenses,Expense,,Salaries and wages,true
+12,5200,Software & Subscriptions,Expense,,SaaS tools and cloud infrastructure,true
+13,5300,Office & Facilities,Expense,,Rent and office supplies,true
+14,5400,Travel & Entertainment,Expense,,Business travel and meals,true
+15,5500,Professional Services,Expense,,Legal and consulting fees,true
+16,5600,Marketing & Advertising,Expense,,Marketing campaigns and ads,true
+17,5700,Insurance,Expense,,Business insurance premiums,true
