@@ -1095,6 +1095,8 @@ body {
 
 .sql-code-block pre {
   margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .sql-code-block code {
@@ -1102,6 +1104,7 @@ body {
   font-size: 0.82rem;
   color: #67E8F9;
   line-height: 1.4;
+  white-space: inherit;
 }
 
 .lineage-narrative {

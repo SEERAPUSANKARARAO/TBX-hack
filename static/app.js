@@ -34,6 +34,17 @@ document.addEventListener("DOMContentLoaded", () => {
   `;
   const ANSWER_PLACEHOLDER = "Submit a query on the left to inspect real-time deterministic financial insights.";
 
+  // Format only the lineage display. Copy/export retain the untouched SQL.
+  function formatSqlForDisplay(sql) {
+    if (!sql) return "-- No SQL extracted (e.g. clarification needed)";
+    return sql
+      .replace(/\s+/g, " ")
+      .replace(/\b(SELECT|FROM|WHERE|GROUP BY|HAVING|ORDER BY|LIMIT|UNION(?: ALL)?|JOIN|LEFT JOIN|RIGHT JOIN|INNER JOIN)\b/gi, "\n$1")
+      .replace(/\s*,\s*/g, ",\n  ")
+      .replace(/\s+(AND|OR)\s+/gi, "\n  $1 ")
+      .trim();
+  }
+
   // DOM Elements
   const queryForm = document.getElementById("query-form");
   const queryInput = document.getElementById("user-query-input");
@@ -364,7 +375,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // SQL Audit & Lineage
-    executedSqlCode.textContent = data.extracted_sql || "-- No SQL extracted (e.g. clarification needed)";
+    executedSqlCode.textContent = formatSqlForDisplay(data.extracted_sql);
     validationPill.textContent = data.sql_valid ? "Read-Only Enforced" : (data.validation_error ? "Validation Failed" : "Dry-Run");
     validationPill.className = `pill-badge ${data.sql_valid ? "valid" : "error"}`;
 
