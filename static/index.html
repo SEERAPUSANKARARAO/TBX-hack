@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/analytics.css" />
 </head>
 <body>
   <!-- LOCK SCREEN — a demo-only UX gate, not real authentication. There is
@@ -83,6 +84,11 @@
       </div>
     </header>
 
+    <nav class="analytics-nav" aria-label="Workspace">
+      <button type="button" id="tab-chat" aria-pressed="true">Chat &amp; analysis</button>
+      <button type="button" id="tab-analytics" aria-pressed="false">Platform analytics</button>
+    </nav>
+    <section id="analytics-panel" hidden aria-label="Platform analytics"></section>
     <!-- MAIN SPLIT WORKSPACE -->
     <main class="main-workspace">
       <!-- LEFT PANE: CONVERSATION & PROMPTS -->
@@ -301,5 +307,6 @@
   </div>
 
   <script src="/static/app.js"></script>
+  <script src="/static/analytics.js"></script>
 </body>
 </html>
