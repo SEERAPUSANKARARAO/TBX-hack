@@ -92,6 +92,7 @@ class QueryResponse(BaseModel):
     confidence: ConfidenceInfo | None = None
     grounding_status: str = "not_evaluated"
     fallback_reason: str | None = None
+    visualization: dict | None = None
     numbers_grounded: bool = True
     llm_provider: str = ""
     llm_model: str = ""

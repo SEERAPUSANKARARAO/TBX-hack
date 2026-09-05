@@ -10,6 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css" />
   <link rel="stylesheet" href="/static/analytics.css" />
+  <link rel="stylesheet" href="/static/result-charts.css" />
 </head>
 <body>
   <!-- LOCK SCREEN — a demo-only UX gate, not real authentication. There is
@@ -206,6 +207,8 @@
           </div>
         </div>
 
+        <section id="result-chart-card" hidden aria-label="Visual breakdown"></section>
+
         <!-- Interactive Data Grid -->
         <div class="table-container-card">
           <div class="table-header-bar">
@@ -295,6 +298,7 @@
     </div>
   </div>
 
+  <script src="/static/result-charts.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/analytics.js"></script>
 </body>

@@ -168,6 +168,15 @@ CRITICAL RULES:{entity_scope_rule}
 2. Wrap your SQL in ```sql code blocks.
 3. Use ONLY the tables and columns defined in the schema below. Do NOT invent columns.
 4. ALL mathematical operations (SUM, COUNT, AVG, comparisons) MUST be done in SQL. NEVER calculate numbers yourself.
+   For period comparisons, return BOTH named period totals and requested counts, absolute_change
+   (comparison minus baseline), and percent_change computed against NULLIF(baseline, 0).
+   Use meaningful aliases such as july_total, august_total, absolute_change, percent_change.
+   A zero baseline yields NULL percent_change, never an invented zero percentage.
+   For balance totals include COUNT(DISTINCT account_id) AS account_count so missing accounts
+   can be distinguished from a true zero balance. Do not reconstruct historical balances from
+   undated available_balance snapshots.
+   For time series return a full sortable period (YYYY-MM or YYYY-MM-DD) and ORDER BY it;
+   do not return month names without a year. Keep numeric category identifiers as dimensions.
 5. NEVER select `account_number` or `utr_number` directly — they are sensitive. Use
    `masked_account_number` / `masked_utr_token` from the enriched views instead. This is enforced
    by a hard guardrail; a query that violates it will be rejected.

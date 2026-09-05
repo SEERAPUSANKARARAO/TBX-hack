@@ -57,6 +57,7 @@ from core.query_engine import QueryEngine
 from core.response_synthesizer import synthesize_response
 from core.anomaly_detector import AnomalyDetector
 from core.confidence_scorer import compute_confidence
+from core.visualization import build_visualization
 from core.data_bounds import get_reference_date, get_known_entity_ids
 from core.sql_validator import VALID_TABLES
 from core.db_connection import get_connection
@@ -413,6 +414,13 @@ async def _execute_query(request: QueryRequest):
             "Dry run complete — no query was executed against the database. "
             "Turn off dry-run to get a real answer."
         )
+
+    if response.query_result and response.query_result.success and not request.dry_run:
+        try:
+            response.visualization = build_visualization(
+                response.query_result.model_dump(), response.query_result.sql or response.extracted_sql)
+        except Exception:
+            logger.exception("Visual breakdown unavailable; preserving answer and table")
 
     response.numbers_grounded = numbers_grounded
 

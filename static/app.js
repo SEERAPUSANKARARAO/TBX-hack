@@ -123,6 +123,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // customer's chat, dashboard, or backend conversation_history into the
   // new one.
   function resetSessionState() {
+    window.ResultCharts?.clear();
     requestEpoch++; // discard any in-flight request's response
     requestInFlight = false;
     document.getElementById("btn-submit-query").disabled = false;
@@ -219,6 +220,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const botMsgId = appendMessage("Running Text-to-SQL pipeline...", "bot", true);
     answerText.innerHTML = `<div class="loader-spinner"></div>`;
     timingTag.textContent = "Processing...";
+    window.ResultCharts?.clear();
     confidenceBadge.classList.add("hidden");
     confidenceReasonsCard.classList.add("hidden");
     groundedTag.classList.add("hidden");
@@ -254,6 +256,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
       updateBotMessage(botMsgId, data.answer || "Query executed successfully.");
       renderDashboard(data, clientDuration);
+      try { window.ResultCharts?.render(data); }
+      catch (chartError) { window.ResultCharts?.clear(); console.warn("Visual breakdown unavailable", chartError); }
     } catch (err) {
       if (myEpoch !== requestEpoch) return;
       updateBotMessage(botMsgId, `⚠️ Error: ${err.message}`);
