@@ -15,7 +15,8 @@ import logging
 
 import httpx
 
-from core.llm_http import post_with_retry
+from core.llm_http import post_with_retry, post_with_key_rotation
+from core.api_key_pool import ApiKeyPool
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ def synthesize_response(
     openrouter_base_url: str = "https://openrouter.ai/api/v1",
     openai_api_key: str = "",
     openai_base_url: str = "https://api.openai.com/v1",
-    groq_api_key: str = "",
+    groq_key_pool: ApiKeyPool | None = None,
     temperature: float = 0.3,
     max_tokens: int = 512,
     resolved_entities: dict | None = None,
@@ -196,7 +197,7 @@ QUERY RESULTS ({row_count} rows):
             messages, llm_provider, llm_model,
             ollama_base_url, openrouter_api_key, openrouter_base_url,
             openai_api_key, openai_base_url,
-            groq_api_key, temperature, max_tokens,
+            groq_key_pool, temperature, max_tokens,
         )
         # The prompt instructs "no $ sign" (this is INR data), but a model
         # can ignore formatting instructions even when the numbers underneath
@@ -274,7 +275,7 @@ def _call_llm(
     openrouter_base_url: str,
     openai_api_key: str,
     openai_base_url: str,
-    groq_api_key: str,
+    groq_key_pool: ApiKeyPool | None,
     temperature: float,
     max_tokens: int,
 ) -> tuple[str, dict]:
@@ -320,10 +321,11 @@ def _call_llm(
 
     elif provider == "groq":
         url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
         payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        build_headers = lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         with httpx.Client(timeout=60) as client:
-            resp = post_with_retry(client, url, json=payload, headers=headers)
+            resp = post_with_key_rotation(client, url, json=payload, key_pool=groq_key_pool or ApiKeyPool([], name="groq"),
+                                           build_headers=build_headers)
             data = resp.json()
             return data["choices"][0]["message"]["content"], _usage_from(data)
 

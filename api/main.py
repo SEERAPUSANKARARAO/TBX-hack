@@ -40,11 +40,12 @@ from config import (
     LLM_PROVIDER,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_BASE_URL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
-    OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEY, GROQ_MODEL,
+    OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEYS, GROQ_MODEL,
     MAX_SQL_RETRIES, FUZZY_MATCH_THRESHOLD, LLM_TEMPERATURE,
     LLM_MAX_TOKENS, APP_HOST, APP_PORT,
     DB_HOST, DB_PORT, DB_NAME,
 )
+from core.api_key_pool import ApiKeyPool
 from api.models import (
     QueryRequest, QueryResponse, QueryResultData,
     ExportRequest, HealthResponse, SchemaInfo, SchemaResponse,
@@ -63,6 +64,10 @@ from core.db_connection import get_connection
 logger = logging.getLogger(__name__)
 
 _sessions: dict[str, SQLGenerator] = {}
+
+# Shared across every session/request so rotation state (which key is
+# currently active) persists app-wide, rather than resetting per session.
+GROQ_KEY_POOL = ApiKeyPool(GROQ_API_KEYS, name="groq")
 
 # Plain-English labels for the SQL Lineage & Audit Trace card's business-
 # readable summary (see _build_lineage_summary) — the raw technical grid
@@ -127,7 +132,7 @@ def _get_generator(session_id: str = "default") -> SQLGenerator:
             openrouter_api_key=OPENROUTER_API_KEY,
             openrouter_base_url=OPENROUTER_BASE_URL,
             openai_api_key=OPENAI_API_KEY,
-            groq_api_key=GROQ_API_KEY,
+            groq_key_pool=GROQ_KEY_POOL,
             max_retries=MAX_SQL_RETRIES,
             fuzzy_threshold=FUZZY_MATCH_THRESHOLD,
             temperature=LLM_TEMPERATURE,
@@ -351,7 +356,7 @@ async def _execute_query(request: QueryRequest):
                     openrouter_api_key=OPENROUTER_API_KEY,
                     openrouter_base_url=OPENROUTER_BASE_URL,
                     openai_api_key=OPENAI_API_KEY,
-                    groq_api_key=GROQ_API_KEY,
+                    groq_key_pool=GROQ_KEY_POOL,
                     temperature=0.3,
                     max_tokens=512,
                     resolved_entities=result.resolved_entities,

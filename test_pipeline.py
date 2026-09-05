@@ -24,7 +24,7 @@ from config import (
     LLM_PROVIDER, DB_HOST, DB_PORT, DB_NAME,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_BASE_URL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
-    OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEY, GROQ_MODEL,
+    OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEYS, GROQ_MODEL,
     MAX_SQL_RETRIES, FUZZY_MATCH_THRESHOLD, LLM_TEMPERATURE, LLM_MAX_TOKENS,
 )
 from core.data_bounds import get_reference_date
@@ -340,6 +340,7 @@ def test_query_engine():
 
 def _build_generator():
     from core.sql_generator import SQLGenerator
+    from core.api_key_pool import ApiKeyPool
 
     model = {
         "openrouter": OPENROUTER_MODEL, "ollama": OLLAMA_MODEL,
@@ -350,7 +351,7 @@ def _build_generator():
         llm_provider=LLM_PROVIDER, llm_model=model,
         ollama_base_url=OLLAMA_BASE_URL, openrouter_api_key=OPENROUTER_API_KEY,
         openrouter_base_url=OPENROUTER_BASE_URL, openai_api_key=OPENAI_API_KEY,
-        groq_api_key=GROQ_API_KEY, max_retries=MAX_SQL_RETRIES,
+        groq_key_pool=ApiKeyPool(GROQ_API_KEYS, name="groq"), max_retries=MAX_SQL_RETRIES,
         fuzzy_threshold=FUZZY_MATCH_THRESHOLD, temperature=LLM_TEMPERATURE,
         max_tokens=LLM_MAX_TOKENS,
     ), model

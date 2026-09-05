@@ -38,7 +38,14 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b-instruct")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+# Comma-separated list of Groq API keys (e.g. several free-tier accounts) —
+# takes priority over the single GROQ_API_KEY above when set. Rotated
+# automatically on a 429/401/403 — see core/api_key_pool.py and
+# core/llm_http.py's post_with_key_rotation.
+GROQ_API_KEYS = [k.strip() for k in os.getenv("GROQ_API_KEYS", "").split(",") if k.strip()] or (
+    [GROQ_API_KEY] if GROQ_API_KEY else []
+)
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openrouter")  # openrouter, ollama, openai, groq
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))

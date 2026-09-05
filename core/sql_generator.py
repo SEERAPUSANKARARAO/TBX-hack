@@ -23,7 +23,8 @@ from core.sql_validator import (
 from core.query_engine import QueryEngine, QueryResult
 from core.entity_resolver import EntityResolver, detect_referential_ambiguity
 from core.data_bounds import get_date_range
-from core.llm_http import post_with_retry
+from core.llm_http import post_with_retry, post_with_key_rotation
+from core.api_key_pool import ApiKeyPool
 from core.input_classifier import classify_input
 from core.followups import build_followup_suggestions
 
@@ -103,7 +104,7 @@ class SQLGenerator:
         openrouter_base_url: str = "https://openrouter.ai/api/v1",
         openai_api_key: str = "",
         openai_base_url: str = "https://api.openai.com/v1",
-        groq_api_key: str = "",
+        groq_key_pool: ApiKeyPool | None = None,
         max_retries: int = 2,
         fuzzy_threshold: int = 90,
         temperature: float = 0.0,
@@ -116,7 +117,7 @@ class SQLGenerator:
         self.openrouter_base_url = openrouter_base_url.rstrip("/")
         self.openai_api_key = openai_api_key
         self.openai_base_url = openai_base_url.rstrip("/")
-        self.groq_api_key = groq_api_key
+        self.groq_key_pool = groq_key_pool or ApiKeyPool([], name="groq")
         self.max_retries = max_retries
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -398,13 +399,14 @@ class SQLGenerator:
 
     def _call_groq(self, messages: list[dict]) -> str:
         url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {self.groq_api_key}", "Content-Type": "application/json"}
         payload = {
             "model": self.llm_model, "messages": messages,
             "temperature": self.temperature, "max_tokens": self.max_tokens,
         }
+        build_headers = lambda key: {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         with httpx.Client(timeout=120) as client:
-            response = post_with_retry(client, url, json=payload, headers=headers)
+            response = post_with_key_rotation(client, url, json=payload, key_pool=self.groq_key_pool,
+                                               build_headers=build_headers)
             data = response.json()
             self._record_openai_style_usage(data)
             return data["choices"][0]["message"]["content"]

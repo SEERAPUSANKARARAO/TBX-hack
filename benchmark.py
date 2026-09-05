@@ -33,13 +33,16 @@ from config import (
     LLM_PROVIDER, DB_HOST, DB_PORT, DB_NAME,
     OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_BASE_URL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
-    OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEY, GROQ_MODEL,
+    OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEYS, GROQ_MODEL,
     MAX_SQL_RETRIES, FUZZY_MATCH_THRESHOLD,
 )
 from core.sql_generator import SQLGenerator
 from core.sql_validator import validate_sql
 from core.response_synthesizer import synthesize_response
 from core.data_bounds import get_reference_date
+from core.api_key_pool import ApiKeyPool
+
+GROQ_KEY_POOL = ApiKeyPool(GROQ_API_KEYS, name="groq")
 
 SENSITIVE_COLUMNS = {"account_number", "utr_number"}
 
@@ -134,7 +137,7 @@ def run_benchmark(dry_run: bool = False, with_synthesis: bool = False):
         llm_provider=LLM_PROVIDER, llm_model=active_model,
         ollama_base_url=OLLAMA_BASE_URL, openrouter_api_key=OPENROUTER_API_KEY,
         openrouter_base_url=OPENROUTER_BASE_URL, openai_api_key=OPENAI_API_KEY,
-        groq_api_key=GROQ_API_KEY, max_retries=MAX_SQL_RETRIES,
+        groq_key_pool=GROQ_KEY_POOL, max_retries=MAX_SQL_RETRIES,
         fuzzy_threshold=FUZZY_MATCH_THRESHOLD,
     )
     reference_date = get_reference_date()
@@ -184,7 +187,7 @@ def run_benchmark(dry_run: bool = False, with_synthesis: bool = False):
                     user_query=query, sql=pipe_res.extracted_sql, query_result=pipe_res.query_result.to_dict(),
                     llm_provider=LLM_PROVIDER, llm_model=active_model,
                     ollama_base_url=OLLAMA_BASE_URL, openrouter_api_key=OPENROUTER_API_KEY,
-                    openrouter_base_url=OPENROUTER_BASE_URL, openai_api_key=OPENAI_API_KEY, groq_api_key=GROQ_API_KEY,
+                    openrouter_base_url=OPENROUTER_BASE_URL, openai_api_key=OPENAI_API_KEY, groq_key_pool=GROQ_KEY_POOL,
                 )
                 tokens_in += synth_usage.get("prompt_tokens", 0)
                 tokens_out += synth_usage.get("completion_tokens", 0)
