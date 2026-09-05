@@ -312,8 +312,8 @@ class SQLGenerator:
                 summary += f" Sample: {first_row}"
 
             self.conversation_history.append({"query": user_query, "sql": sql, "summary": summary})
-            if len(self.conversation_history) > 5:
-                self.conversation_history = self.conversation_history[-5:]
+            if len(self.conversation_history) > 10:
+                self.conversation_history = self.conversation_history[-10:]
 
         result.suggestions = build_followup_suggestions(result.resolved_entities, query_result.success)
 

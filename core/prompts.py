@@ -237,7 +237,7 @@ def build_user_message(
         return f"Question: {user_query}"
 
     history_parts = []
-    for i, turn in enumerate(conversation_history[-3:], 1):
+    for i, turn in enumerate(conversation_history[-6:], 1):
         history_parts.append(
             f"Turn {i}:\n"
             f"  User: {turn.get('query', '')}\n"
